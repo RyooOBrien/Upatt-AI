@@ -5,8 +5,8 @@ import 'package:flutter/material.dart';
 import '../../core/theme/app_colors.dart';
 import '../../core/theme/app_text_styles.dart';
 import '../home/home_screen.dart';
-import 'register_screen.dart';
 import 'forgot_password_screen.dart';
+import 'register_screen.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -117,13 +117,10 @@ class _LoginScreenState extends State<LoginScreen> {
     });
 
     try {
-      // Login menggunakan Firebase Authentication
       await FirebaseAuth.instance.signInWithEmailAndPassword(
         email: _emailController.text.trim(),
         password: _passwordController.text,
       );
-
-
 
       if (!mounted) return;
 
@@ -133,7 +130,6 @@ class _LoginScreenState extends State<LoginScreen> {
           builder: (context) => const HomeScreen(),
         ),
       );
-
     } on FirebaseAuthException catch (e) {
       if (!mounted) return;
 
@@ -141,28 +137,23 @@ class _LoginScreenState extends State<LoginScreen> {
 
       switch (e.code) {
         case 'invalid-credential':
-          message =
-              'Email or password is incorrect.';
+          message = 'Email or password is incorrect.';
           break;
 
         case 'user-not-found':
-          message =
-              'No account found with this email.';
+          message = 'No account found with this email.';
           break;
 
         case 'wrong-password':
-          message =
-              'Incorrect password.';
+          message = 'Incorrect password.';
           break;
 
         case 'invalid-email':
-          message =
-              'The email address is invalid.';
+          message = 'The email address is invalid.';
           break;
 
         case 'user-disabled':
-          message =
-              'This account has been disabled.';
+          message = 'This account has been disabled.';
           break;
 
         case 'too-many-requests':
@@ -171,13 +162,13 @@ class _LoginScreenState extends State<LoginScreen> {
           break;
 
         default:
-          message =
-              e.message ?? 'Login failed.';
+          message = e.message ?? 'Login failed.';
       }
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(message),
+          behavior: SnackBarBehavior.floating,
         ),
       );
     } catch (e) {
@@ -188,6 +179,7 @@ class _LoginScreenState extends State<LoginScreen> {
           content: Text(
             'Something went wrong. Please try again.',
           ),
+          behavior: SnackBarBehavior.floating,
         ),
       );
     } finally {
@@ -236,29 +228,29 @@ class _LoginScreenState extends State<LoginScreen> {
           builder: (context) => const HomeScreen(),
         ),
       );
+    } on FirebaseAuthException catch (e) {
+      if (!mounted) return;
 
-      } on FirebaseAuthException catch (e) {
-        if (!mounted) return;
-
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              'Login Google gagal: ${e.message ?? e.code}',
-            ),
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Login Google gagal: ${e.message ?? e.code}',
           ),
-        );
-      } catch (e) {
-        if (!mounted) return;
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
 
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              'Login Google gagal: $e',
-            ),
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Login Google gagal: $e',
           ),
-        );
-      }
-      finally {
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } finally {
       if (mounted) {
         setState(() {
           _isGoogleLoading = false;
@@ -292,348 +284,417 @@ class _LoginScreenState extends State<LoginScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: AppColors.background,
-      body: SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.symmetric(
-            horizontal: 24,
-            vertical: 40,
+      backgroundColor: const Color(0xFF050505),
+
+      body: Stack(
+        children: [
+          // =========================
+          // BASE BLACK
+          // =========================
+
+          const Positioned.fill(
+            child: ColoredBox(
+              color: Color(0xFF050505),
+            ),
           ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const SizedBox(height: 30),
 
-              // =========================
-              // LOGO
-              // =========================
+          // =========================
+          // BOTTOM PURPLE GLOW
+          // =========================
 
-              Center(
-                child: Container(
-                  width: 70,
-                  height: 70,
-                  decoration: BoxDecoration(
-                    color: AppColors.primary,
-                    borderRadius: BorderRadius.circular(20),
+          Positioned.fill(
+            child: DecoratedBox(
+              decoration: const BoxDecoration(
+                gradient: RadialGradient(
+                  center: Alignment(0, 1.15),
+                  radius: 1.15,
+                  colors: [
+                    Color(0xFF382070),
+                    Color(0xFF120D20),
+                    Color(0x00050505),
+                  ],
+                  stops: [
+                    0.0,
+                    0.45,
+                    1.0,
+                  ],
+                ),
+              ),
+            ),
+          ),
+
+          // =========================
+          // SUBTLE GRAY TOP RIGHT
+          // =========================
+
+          Positioned.fill(
+            child: DecoratedBox(
+              decoration: const BoxDecoration(
+                gradient: RadialGradient(
+                  center: Alignment(1.15, -1.05),
+                  radius: 0.9,
+                  colors: [
+                    Color(0xFF3A3A40),
+                    Color(0x00050505),
+                  ],
+                  stops: [
+                    0.0,
+                    1.0,
+                  ],
+                ),
+              ),
+            ),
+          ),
+
+          // =========================
+          // CONTENT
+          // =========================
+
+          SafeArea(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.symmetric(
+                horizontal: 24,
+                vertical: 40,
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const SizedBox(height: 30),
+
+                  // =========================
+                  // LOGO UPATT
+                  // =========================
+
+                  Center(
+                    child: Image.asset(
+                    'assets/images/upatt_logo.png',
+                    width: 104,
+                    height: 104,
+                    fit: BoxFit.contain,
                   ),
-                  child: const Icon(
-                    Icons.auto_awesome_rounded,
-                    color: Colors.white,
-                    size: 36,
                   ),
-                ),
-              ),
 
-              const SizedBox(height: 28),
+                  const SizedBox(height: 16),
 
-              // =========================
-              // TITLE
-              // =========================
+                  // =========================
+                  // TITLE
+                  // =========================
 
-              Center(
-                child: Text(
-                  'Welcome Back!',
-                  style: AppTextStyles.heading,
-                ),
-              ),
+                  Center(
+                    child: Text(
+                      'Welcome Back!',
+                      style: AppTextStyles.heading,
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
 
-              const SizedBox(height: 8),
+                  const SizedBox(height: 8),
 
-              Center(
-                child: Text(
-                  'Chat smarter with your AI assistant',
-                  style: AppTextStyles.bodySecondary,
-                  textAlign: TextAlign.center,
-                ),
-              ),
+                  Center(
+                    child: Text(
+                      'Chat smarter with Upatt',
+                      style: AppTextStyles.bodySecondary,
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
 
-              const SizedBox(height: 40),
+                  const SizedBox(height: 40),
 
-              // =========================
-              // EMAIL
-              // =========================
+                  // =========================
+                  // EMAIL
+                  // =========================
 
-              Text(
-                'Email',
-                style: AppTextStyles.body.copyWith(
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
+                  Text(
+                    'Email',
+                    style: AppTextStyles.body.copyWith(
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
 
-              const SizedBox(height: 8),
+                  const SizedBox(height: 8),
 
-              TextField(
-                controller: _emailController,
-                keyboardType: TextInputType.emailAddress,
-                textInputAction: TextInputAction.next,
-                onChanged: _validateEmail,
-                decoration: _inputDecoration(
-                  hintText: 'Enter your email',
-                  prefixIcon: Icons.email_outlined,
-                  errorText:
-                      _emailTouched ? _emailError : null,
-                ),
-              ),
+                  TextField(
+                    controller: _emailController,
+                    keyboardType: TextInputType.emailAddress,
+                    textInputAction: TextInputAction.next,
+                    onChanged: _validateEmail,
+                    style: const TextStyle(
+                      color: AppColors.textPrimary,
+                    ),
+                    decoration: _inputDecoration(
+                      hintText: 'Enter your email',
+                      prefixIcon: Icons.email_outlined,
+                      errorText:
+                          _emailTouched ? _emailError : null,
+                    ),
+                  ),
 
-              const SizedBox(height: 20),
+                  const SizedBox(height: 20),
 
-              // =========================
-              // PASSWORD
-              // =========================
+                  // =========================
+                  // PASSWORD
+                  // =========================
 
-              Text(
-                'Password',
-                style: AppTextStyles.body.copyWith(
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
+                  Text(
+                    'Password',
+                    style: AppTextStyles.body.copyWith(
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
 
-              const SizedBox(height: 8),
+                  const SizedBox(height: 8),
 
-              TextField(
-                controller: _passwordController,
-                obscureText: _obscurePassword,
-                textInputAction: TextInputAction.done,
-                onChanged: _validatePassword,
-                onSubmitted: (_) {
-                  if (_isLoginValid) {
-                    _login();
-                  }
-                },
-                decoration: _inputDecoration(
-                  hintText: 'Enter your password',
-                  prefixIcon: Icons.lock_outline,
-                  errorText:
-                      _passwordTouched
+                  TextField(
+                    controller: _passwordController,
+                    obscureText: _obscurePassword,
+                    textInputAction: TextInputAction.done,
+                    onChanged: _validatePassword,
+                    onSubmitted: (_) {
+                      if (_isLoginValid) {
+                        _login();
+                      }
+                    },
+                    style: const TextStyle(
+                      color: AppColors.textPrimary,
+                    ),
+                    decoration: _inputDecoration(
+                      hintText: 'Enter your password',
+                      prefixIcon: Icons.lock_outline,
+                      errorText: _passwordTouched
                           ? _passwordError
                           : null,
-                  suffixIcon: IconButton(
-                    onPressed: () {
-                      setState(() {
-                        _obscurePassword =
-                            !_obscurePassword;
-                      });
-                    },
-                    icon: Icon(
-                      _obscurePassword
-                          ? Icons.visibility_outlined
-                          : Icons.visibility_off_outlined,
-                    ),
-                  ),
-                ),
-              ),
-
-              const SizedBox(height: 12),
-
-              // =========================
-              // FORGOT PASSWORD
-              // =========================
-
-              Align(
-                alignment: Alignment.centerRight,
-                child: TextButton(
-                  onPressed: () {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (context) => ForgotPasswordScreen(
-                          initialEmail: _emailController.text.trim(),
+                      suffixIcon: IconButton(
+                        onPressed: () {
+                          setState(() {
+                            _obscurePassword =
+                                !_obscurePassword;
+                          });
+                        },
+                        icon: Icon(
+                          _obscurePassword
+                              ? Icons.visibility_outlined
+                              : Icons.visibility_off_outlined,
                         ),
                       ),
-                    );
-                  },
-                  child: const Text(
-                    'Forgot Password?',
-                  ),
-                ),
-              ),
-
-              const SizedBox(height: 12),
-
-              // =========================
-              // LOGIN BUTTON
-              // =========================
-
-              SizedBox(
-                width: double.infinity,
-                height: 52,
-                child: ElevatedButton(
-                  onPressed:
-                      _isLoginValid && !_isLoading
-                          ? _login
-                          : null,
-                  child: _isLoading
-                      ? const SizedBox(
-                          width: 22,
-                          height: 22,
-                          child:
-                              CircularProgressIndicator(
-                            strokeWidth: 2,
-                            color: Colors.white,
-                          ),
-                        )
-                      : Text(
-                          'LOGIN',
-                          style: AppTextStyles.button,
-                        ),
-                ),
-              ),
-
-              const SizedBox(height: 28),
-
-
-              // =========================
-              // DIVIDER
-              // =========================
-
-              Row(
-                children: [
-                  const Expanded(
-                    child: Divider(),
-                  ),
-                  Padding(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 12,
-                    ),
-                    child: Text(
-                      'or continue',
-                      style:
-                          AppTextStyles.bodySecondary,
                     ),
                   ),
-                  const Expanded(
-                    child: Divider(),
-                  ),
-                ],
-              ),
 
-              const SizedBox(height: 28),
+                  const SizedBox(height: 12),
 
-              // =========================
-              // GOOGLE LOGIN
-              // =========================
+                  // =========================
+                  // FORGOT PASSWORD
+                  // =========================
 
-              SizedBox(
-                width: double.infinity,
-                height: 52,
-                child: OutlinedButton(
-                  onPressed:
-                      _isGoogleLoading
-                          ? null
-                          : _signInWithGoogle,
-                  style: OutlinedButton.styleFrom(
-                    backgroundColor: Colors.white,
-                    side: const BorderSide(
-                      color: AppColors.border,
-                    ),
-                    shape:
-                        RoundedRectangleBorder(
-                      borderRadius:
-                          BorderRadius.circular(12),
-                    ),
-                  ),
-                  child: _isGoogleLoading
-                      ? const SizedBox(
-                          width: 22,
-                          height: 22,
-                          child:
-                              CircularProgressIndicator(
-                            strokeWidth: 2,
-                          ),
-                        )
-                      : Row(
-                          mainAxisAlignment:
-                              MainAxisAlignment.center,
-                          children: [
-                            Container(
-                              width: 24,
-                              height: 24,
-                              alignment:
-                                  Alignment.center,
-                              decoration:
-                                  BoxDecoration(
-                                shape: BoxShape.circle,
-                                border: Border.all(
-                                  color:
-                                      AppColors.border,
-                                ),
-                              ),
-                              child: Text(
-                                'G',
-                                style:
-                                    AppTextStyles.body
-                                        .copyWith(
-                                  fontWeight:
-                                      FontWeight.w700,
-                                  color:
-                                      AppColors.primary,
-                                ),
-                              ),
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: TextButton(
+                      onPressed: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (context) =>
+                                ForgotPasswordScreen(
+                              initialEmail:
+                                  _emailController.text.trim(),
                             ),
-                            const SizedBox(width: 10),
-                            Text(
-                              'Continue with Google',
-                              style:
-                                  AppTextStyles.body
-                                      .copyWith(
-                                fontWeight:
-                                    FontWeight.w600,
+                          ),
+                        );
+                      },
+                      child: const Text(
+                        'Forgot Password?',
+                      ),
+                    ),
+                  ),
+
+                  const SizedBox(height: 12),
+
+                  // =========================
+                  // LOGIN BUTTON
+                  // =========================
+
+                  SizedBox(
+                    width: double.infinity,
+                    height: 52,
+                    child: ElevatedButton(
+                      onPressed:
+                          _isLoginValid && !_isLoading
+                              ? _login
+                              : null,
+                      child: _isLoading
+                          ? const SizedBox(
+                              width: 22,
+                              height: 22,
+                              child:
+                                  CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: Colors.white,
                               ),
+                            )
+                          : Text(
+                              'LOGIN',
+                              style: AppTextStyles.button,
                             ),
-                          ],
-                        ),
-                ),
-              ),
+                    ),
+                  ),
 
-              const SizedBox(height: 28),
+                  const SizedBox(height: 28),
 
-              // =========================
-              // REGISTER
-              // =========================
+                  // =========================
+                  // DIVIDER
+                  // =========================
 
-              Center(
-                child: Text.rich(
-                  TextSpan(
-                    text:
-                        "Don't have an account? ",
-                    style:
-                        AppTextStyles.bodySecondary,
+                  Row(
                     children: [
-                      WidgetSpan(
-                        alignment:
-                            PlaceholderAlignment
-                                .middle,
-                        child: GestureDetector(
-                          onTap: () {
-                            Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                builder: (context) =>
-                                    const RegisterScreen(),
-                              ),
-                            );
-                          },
-                          child: Text(
-                            'Register',
-                            style:
-                                AppTextStyles.body.copyWith(
-                              color:
-                                  AppColors.primary,
-                              fontWeight:
-                                  FontWeight.w600,
-                            ),
-                          ),
+                      const Expanded(
+                        child: Divider(),
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
                         ),
+                        child: Text(
+                          'or continue',
+                          style:
+                              AppTextStyles.bodySecondary,
+                        ),
+                      ),
+                      const Expanded(
+                        child: Divider(),
                       ),
                     ],
                   ),
-                ),
-              ),
 
-              const SizedBox(height: 20),
-            ],
+                  const SizedBox(height: 28),
+
+                  // =========================
+                  // GOOGLE LOGIN
+                  // =========================
+
+                  SizedBox(
+                    width: double.infinity,
+                    height: 52,
+                    child: OutlinedButton(
+                      onPressed: _isGoogleLoading
+                          ? null
+                          : _signInWithGoogle,
+                      style: OutlinedButton.styleFrom(
+                        backgroundColor:
+                            const Color(0xFF151518),
+                        side: const BorderSide(
+                          color: AppColors.border,
+                        ),
+                        foregroundColor:
+                            AppColors.textPrimary,
+                        shape:
+                            RoundedRectangleBorder(
+                          borderRadius:
+                              BorderRadius.circular(12),
+                        ),
+                      ),
+                      child: _isGoogleLoading
+                          ? const SizedBox(
+                              width: 22,
+                              height: 22,
+                              child:
+                                  CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color:
+                                    AppColors.primary,
+                              ),
+                            )
+                          : Row(
+                              mainAxisAlignment:
+                                  MainAxisAlignment.center,
+                              children: [
+                                Container(
+                                  width: 24,
+                                  height: 24,
+                                  alignment:
+                                      Alignment.center,
+                                  decoration:
+                                      BoxDecoration(
+                                    shape:
+                                        BoxShape.circle,
+                                    border: Border.all(
+                                      color:
+                                          AppColors.border,
+                                    ),
+                                  ),
+                                  child: Image.asset(
+                                    'assets/images/google_logo.png',
+                                    width: 22,
+                                    height: 22,
+                                  ),
+                                ),
+
+                                const SizedBox(width: 10),
+
+                                Text(
+                                  'Continue with Google',
+                                  style:
+                                      AppTextStyles.body
+                                          .copyWith(
+                                    fontWeight:
+                                        FontWeight.w600,
+                                  ),
+                                ),
+                              ],
+                            ),
+                    ),
+                  ),
+
+                  const SizedBox(height: 28),
+
+                  // =========================
+                  // REGISTER
+                  // =========================
+
+                  Center(
+                    child: Text.rich(
+                      TextSpan(
+                        text:
+                            "Don't have an account? ",
+                        style:
+                            AppTextStyles.bodySecondary,
+                        children: [
+                          WidgetSpan(
+                            alignment:
+                                PlaceholderAlignment
+                                    .middle,
+                            child: GestureDetector(
+                              onTap: () {
+                                Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (context) =>
+                                        const RegisterScreen(),
+                                  ),
+                                );
+                              },
+                              child: Text(
+                                'Register',
+                                style:
+                                    AppTextStyles.body
+                                        .copyWith(
+                                  color:
+                                      AppColors.primary,
+                                  fontWeight:
+                                      FontWeight.w600,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+
+                  const SizedBox(height: 20),
+                ],
+              ),
+            ),
           ),
-        ),
+        ],
       ),
     );
   }

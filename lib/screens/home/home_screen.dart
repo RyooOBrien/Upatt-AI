@@ -12,42 +12,57 @@ class HomeScreen extends StatefulWidget {
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> {
-  // =========================
+class _HomeScreenState extends State<HomeScreen>
+    with SingleTickerProviderStateMixin {
+  // =========================================================
   // CONTROLLERS
-  // =========================
+  // =========================================================
 
   final _messageController = TextEditingController();
+  final _scrollController = ScrollController();
 
-  // =========================
+  // =========================================================
   // STATE
-  // =========================
+  // =========================================================
 
   final List<Map<String, String>> _messages = [];
 
-  bool _isComposerExpanded = false;
   bool _hasText = false;
+  bool _showAttachmentMenu = false;
+  bool _isTyping = false;
 
-  // =========================
+  // =========================================================
+  // COLORS
+  // =========================================================
+
+  static const Color _background = Color(0xFF050505);
+  static const Color _surface = Color(0xFF151518);
+  static const Color _surfaceLight = Color(0xFF1D1D21);
+  static const Color _border = Color(0xFF2A2A2F);
+
+  // =========================================================
   // DISPOSE
-  // =========================
+  // =========================================================
 
   @override
   void dispose() {
     _messageController.dispose();
+    _scrollController.dispose();
     super.dispose();
   }
 
-  // =========================
+  // =========================================================
   // SEND MESSAGE
-  // =========================
+  // =========================================================
 
-  void _sendMessage() {
+  Future<void> _sendMessage() async {
     final message = _messageController.text.trim();
 
-    if (message.isEmpty) {
+    if (message.isEmpty || _isTyping) {
       return;
     }
+
+    FocusScope.of(context).unfocus();
 
     setState(() {
       _messages.add({
@@ -57,17 +72,71 @@ class _HomeScreenState extends State<HomeScreen> {
 
       _messageController.clear();
       _hasText = false;
-      _isComposerExpanded = false;
+      _showAttachmentMenu = false;
+      _isTyping = true;
     });
 
-    // TODO:
-    // Response dari API Upatt akan ditambahkan
-    // oleh teman kamu di bagian ini.
+    _scrollToBottom();
+
+    // =======================================================
+    // DEMO RESPONSE
+    // NANTI DIGANTI DENGAN BACKEND AI
+    // =======================================================
+
+    await Future.delayed(
+      const Duration(milliseconds: 1500),
+    );
+
+    if (!mounted) return;
+
+    setState(() {
+      _isTyping = false;
+
+      _messages.add({
+        'sender': 'upatt',
+        'message':
+            'Ini adalah response sementara dari Upatt. '
+            'Nanti bagian ini akan diganti dengan response '
+            'dari backend AI.',
+      });
+    });
+
+    _scrollToBottom();
   }
 
-  // =========================
+  // =========================================================
+  // AUTO SCROLL
+  // =========================================================
+
+  void _scrollToBottom() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!_scrollController.hasClients) {
+        return;
+      }
+
+      _scrollController.animateTo(
+        _scrollController.position.maxScrollExtent,
+        duration: const Duration(milliseconds: 300),
+        curve: Curves.easeOut,
+      );
+    });
+  }
+
+  // =========================================================
+  // NEW CHAT
+  // =========================================================
+
+  void _newChat() {
+    setState(() {
+      _messages.clear();
+      _isTyping = false;
+      _showAttachmentMenu = false;
+    });
+  }
+
+  // =========================================================
   // LOGOUT
-  // =========================
+  // =========================================================
 
   Future<void> _logout() async {
     await FirebaseAuth.instance.signOut();
@@ -83,96 +152,124 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  // =========================
-  // NEW CHAT
-  // =========================
+  // =========================================================
+  // ATTACHMENT MENU
+  // =========================================================
 
-  void _newChat() {
-    if (_messages.isEmpty) {
-      return;
-    }
+  void _toggleAttachmentMenu() {
+    FocusScope.of(context).unfocus();
 
     setState(() {
-      _messages.clear();
-      _messageController.clear();
-      _hasText = false;
-      _isComposerExpanded = false;
+      _showAttachmentMenu = !_showAttachmentMenu;
     });
   }
 
-  // =========================
-  // ATTACHMENT ACTION
-  // =========================
-
-  void _handleAttachment(String type) {
+  void _selectAttachment(String type) {
     setState(() {
-      _isComposerExpanded = false;
+      _showAttachmentMenu = false;
     });
-
-    String message;
-
-    switch (type) {
-      case 'camera':
-        message = 'Camera feature coming soon.';
-        break;
-
-      case 'photo':
-        message = 'Photo picker coming soon.';
-        break;
-
-      case 'file':
-        message = 'File picker coming soon.';
-        break;
-
-      default:
-        message = 'Feature coming soon.';
-    }
 
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text(message),
+        content: Text('$type feature will be added later.'),
         behavior: SnackBarBehavior.floating,
+        backgroundColor: _surfaceLight,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+        ),
         duration: const Duration(seconds: 2),
       ),
     );
   }
 
-  // =========================
+  // =========================================================
+  // VOICE
+  // =========================================================
+
+  void _startVoiceInput() {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: const Text(
+          'Voice input will be added later.',
+        ),
+        behavior: SnackBarBehavior.floating,
+        backgroundColor: _surfaceLight,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+        ),
+        duration: const Duration(seconds: 2),
+      ),
+    );
+  }
+
+  // =========================================================
   // BUILD
-  // =========================
+  // =========================================================
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: AppColors.background,
+    final user = FirebaseAuth.instance.currentUser;
 
-      // =========================
+    final userName =
+        user?.displayName?.isNotEmpty == true
+            ? user!.displayName!
+            : 'User';
+
+    return Scaffold(
+      backgroundColor: _background,
+
+      // =====================================================
       // APP BAR
-      // =========================
+      // =====================================================
 
       appBar: AppBar(
-        backgroundColor: AppColors.background,
+        backgroundColor: _background,
+        surfaceTintColor: Colors.transparent,
         elevation: 0,
-        scrolledUnderElevation: 0,
-        leading: IconButton(
-          onPressed: () {
-            // Chat history akan dibuat nanti.
-          },
-          icon: const Icon(
-            Icons.menu_rounded,
-          ),
-          tooltip: 'Chat history',
-        ),
-        titleSpacing: 0,
+        automaticallyImplyLeading: false,
+        titleSpacing: 8,
+
         title: Row(
-          mainAxisSize: MainAxisSize.min,
           children: [
+            // MENU
+            IconButton(
+              onPressed: () {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: const Text(
+                      'Chat history will be added later.',
+                    ),
+                    behavior: SnackBarBehavior.floating,
+                    backgroundColor: _surfaceLight,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                );
+              },
+              icon: const Icon(
+                Icons.menu_rounded,
+                size: 22,
+                color: Colors.white,
+              ),
+            ),
+
+            // UPATT ICON
             Container(
               width: 34,
               height: 34,
               decoration: BoxDecoration(
                 color: AppColors.primary,
                 borderRadius: BorderRadius.circular(10),
+                boxShadow: [
+                  BoxShadow(
+                    color: AppColors.primary.withValues(
+                      alpha: 0.25,
+                    ),
+                    blurRadius: 12,
+                    spreadRadius: 1,
+                  ),
+                ],
               ),
               child: const Icon(
                 Icons.auto_awesome_rounded,
@@ -181,263 +278,273 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             ),
 
-            const SizedBox(width: 10),
+            const SizedBox(width: 8),
 
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Upatt',
-                  style: AppTextStyles.body.copyWith(
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-              ],
+            // UPATT NAME
+            Text(
+              'Upatt',
+              style: AppTextStyles.body.copyWith(
+                color: Colors.white,
+                fontWeight: FontWeight.w700,
+              ),
             ),
           ],
         ),
+
         actions: [
           // NEW CHAT
           IconButton(
             onPressed: _newChat,
+            tooltip: 'New chat',
             icon: const Icon(
               Icons.edit_square,
+              size: 21,
+              color: Colors.white,
             ),
-            tooltip: 'New chat',
           ),
 
           // MORE
           PopupMenuButton<String>(
             icon: const Icon(
               Icons.more_vert_rounded,
+              color: Colors.white,
             ),
+            color: _surfaceLight,
             onSelected: (value) {
+              if (value == 'new_chat') {
+                _newChat();
+              }
+
               if (value == 'logout') {
                 _logout();
               }
             },
             itemBuilder: (context) {
-              return const [
+              return [
+                PopupMenuItem(
+                  value: 'new_chat',
+                  child: Row(
+                    children: [
+                      const Icon(
+                        Icons.add_comment_outlined,
+                        color: Colors.white,
+                      ),
+                      const SizedBox(width: 10),
+                      Text(
+                        'New chat',
+                        style: AppTextStyles.body.copyWith(
+                          color: Colors.white,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
                 PopupMenuItem(
                   value: 'logout',
                   child: Row(
                     children: [
-                      Icon(
+                      const Icon(
                         Icons.logout_rounded,
+                        color: Colors.white,
                       ),
-                      SizedBox(width: 10),
-                      Text('Logout'),
+                      const SizedBox(width: 10),
+                      Text(
+                        'Logout',
+                        style: AppTextStyles.body.copyWith(
+                          color: Colors.white,
+                        ),
+                      ),
                     ],
                   ),
                 ),
               ];
             },
           ),
+
+          const SizedBox(width: 4),
         ],
       ),
 
-      // =========================
+      // =====================================================
       // BODY
-      // =========================
+      // =====================================================
 
-      body: Column(
+      body: Stack(
         children: [
-          Expanded(
-            child: _messages.isEmpty
-                ? _buildEmptyState()
-                : _buildMessageList(),
-          ),
-
-          _buildMessageInput(),
-        ],
-      ),
-    );
-  }
-
-  // =========================
-  // EMPTY STATE
-  // =========================
-
-  Widget _buildEmptyState() {
-    return const SizedBox.expand();
-  }
-
-  // =========================
-  // MESSAGE LIST
-  // =========================
-
-  Widget _buildMessageList() {
-    return ListView.builder(
-      padding: const EdgeInsets.fromLTRB(
-        16,
-        20,
-        16,
-        20,
-      ),
-      itemCount: _messages.length,
-      itemBuilder: (context, index) {
-        final message = _messages[index];
-
-        final isUser = message['sender'] == 'user';
-
-        return Padding(
-          padding: const EdgeInsets.only(
-            bottom: 24,
-          ),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisAlignment: isUser
-                ? MainAxisAlignment.end
-                : MainAxisAlignment.start,
+          Column(
             children: [
-              // =========================
-              // UPATT AVATAR
-              // =========================
+              // =================================================
+              // CHAT AREA
+              // =================================================
 
-              if (!isUser)
-                Container(
-                  width: 32,
-                  height: 32,
-                  margin: const EdgeInsets.only(
-                    right: 10,
-                  ),
-                  decoration: BoxDecoration(
-                    color: AppColors.primary,
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  child: const Icon(
-                    Icons.auto_awesome_rounded,
-                    color: Colors.white,
-                    size: 17,
-                  ),
-                ),
-
-              // =========================
-              // MESSAGE CONTENT
-              // =========================
-
-              Flexible(
-                child: Column(
-                  crossAxisAlignment: isUser
-                      ? CrossAxisAlignment.end
-                      : CrossAxisAlignment.start,
-                  children: [
-                    if (!isUser)
-                      Padding(
-                        padding: const EdgeInsets.only(
-                          bottom: 5,
-                          left: 2,
-                        ),
-                        child: Text(
-                          'Upatt',
-                          style: AppTextStyles.body.copyWith(
-                            fontSize: 12,
-                            fontWeight: FontWeight.w600,
-                            color: AppColors.textSecondary,
-                          ),
-                        ),
-                      ),
-
-                    Container(
-                      constraints: BoxConstraints(
-                        maxWidth:
-                            MediaQuery.of(context).size.width *
-                                0.78,
-                      ),
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: 12,
-                      ),
-                      decoration: BoxDecoration(
-                        color: isUser
-                            ? AppColors.primary
-                            : AppColors.surface,
-                        borderRadius: BorderRadius.only(
-                          topLeft:
-                              const Radius.circular(18),
-                          topRight:
-                              const Radius.circular(18),
-                          bottomLeft: Radius.circular(
-                            isUser ? 18 : 4,
-                          ),
-                          bottomRight: Radius.circular(
-                            isUser ? 4 : 18,
-                          ),
-                        ),
-                      ),
-                      child: Text(
-                        message['message'] ?? '',
-                        style: AppTextStyles.body.copyWith(
-                          color: isUser
-                              ? Colors.white
-                              : AppColors.textPrimary,
-                        ),
-                      ),
-                    ),
-
-                    if (isUser)
-                      Padding(
-                        padding: const EdgeInsets.only(
-                          top: 5,
-                          right: 2,
-                        ),
-                        child: Text(
-                          'You',
-                          style:
-                              AppTextStyles.bodySecondary.copyWith(
-                            fontSize: 11,
-                          ),
-                        ),
-                      ),
-                  ],
-                ),
+              Expanded(
+                child: _messages.isEmpty
+                    ? _buildEmptyState(userName)
+                    : _buildMessageList(),
               ),
+
+              // =================================================
+              // MESSAGE INPUT
+              // =================================================
+
+              _buildMessageInput(),
             ],
           ),
-        );
-      },
+
+          // ===================================================
+          // ATTACHMENT MENU
+          // ===================================================
+
+          if (_showAttachmentMenu)
+            Positioned(
+              left: 16,
+              right: 16,
+              bottom: 82,
+              child: _buildAttachmentMenu(),
+            ),
+        ],
+      ),
     );
   }
 
-  // =========================
-  // COMPOSER ACTION
-  // =========================
+  // =========================================================
+  // EMPTY STATE
+  // =========================================================
 
-  Widget _buildComposerAction({
-    required IconData icon,
-    required String title,
-    required VoidCallback onTap,
-  }) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(14),
-      child: Padding(
+  Widget _buildEmptyState(String userName) {
+    return Center(
+      child: SingleChildScrollView(
         padding: const EdgeInsets.symmetric(
-          horizontal: 8,
-          vertical: 10,
+          horizontal: 28,
         ),
-        child: Row(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
           children: [
+            // ICON
             Container(
-              width: 38,
-              height: 38,
+              width: 72,
+              height: 72,
               decoration: BoxDecoration(
-                color: AppColors.surface,
-                borderRadius: BorderRadius.circular(11),
+                color: AppColors.primary.withValues(
+                  alpha: 0.12,
+                ),
+                borderRadius: BorderRadius.circular(22),
+                border: Border.all(
+                  color: AppColors.primary.withValues(
+                    alpha: 0.18,
+                  ),
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: AppColors.primary.withValues(
+                      alpha: 0.12,
+                    ),
+                    blurRadius: 24,
+                    spreadRadius: 2,
+                  ),
+                ],
               ),
-              child: Icon(
-                icon,
-                size: 20,
-                color: AppColors.textPrimary,
+              child: const Icon(
+                Icons.auto_awesome_rounded,
+                color: AppColors.primary,
+                size: 36,
               ),
             ),
 
-            const SizedBox(width: 14),
+            const SizedBox(height: 22),
 
+            // TITLE
             Text(
-              title,
-              style: AppTextStyles.body.copyWith(
-                fontWeight: FontWeight.w500,
+              'How can I help you?',
+              style: AppTextStyles.title.copyWith(
+                color: Colors.white,
+              ),
+              textAlign: TextAlign.center,
+            ),
+
+            const SizedBox(height: 8),
+
+            // DESCRIPTION
+            Text(
+              'Ask anything, learn something new, '
+              'or create with Upatt.',
+              style: AppTextStyles.bodySecondary.copyWith(
+                color: const Color(0xFF8F8F98),
+              ),
+              textAlign: TextAlign.center,
+            ),
+
+            const SizedBox(height: 24),
+
+            // SUGGESTIONS
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              alignment: WrapAlignment.center,
+              children: [
+                _buildSuggestion(
+                  'Explain a topic',
+                  Icons.lightbulb_outline_rounded,
+                ),
+                _buildSuggestion(
+                  'Help me write',
+                  Icons.edit_outlined,
+                ),
+                _buildSuggestion(
+                  'Help me study',
+                  Icons.school_outlined,
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // =========================================================
+  // SUGGESTION BUTTON
+  // =========================================================
+
+  Widget _buildSuggestion(
+    String text,
+    IconData icon,
+  ) {
+    return InkWell(
+      onTap: () {
+        _messageController.text = text;
+
+        setState(() {
+          _hasText = true;
+        });
+      },
+      borderRadius: BorderRadius.circular(20),
+      child: Container(
+        padding: const EdgeInsets.symmetric(
+          horizontal: 14,
+          vertical: 9,
+        ),
+        decoration: BoxDecoration(
+          color: _surface,
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(
+            color: _border,
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              icon,
+              size: 15,
+              color: AppColors.primary,
+            ),
+            const SizedBox(width: 6),
+            Text(
+              text,
+              style: AppTextStyles.bodySecondary.copyWith(
+                color: const Color(0xFFB5B5BD),
+                fontSize: 12,
               ),
             ),
           ],
@@ -446,9 +553,255 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  // =========================
+  // =========================================================
+  // MESSAGE LIST
+  // =========================================================
+
+  Widget _buildMessageList() {
+    final totalItems =
+        _messages.length + (_isTyping ? 1 : 0);
+
+    return ListView.builder(
+      controller: _scrollController,
+      padding: const EdgeInsets.fromLTRB(
+        16,
+        16,
+        16,
+        20,
+      ),
+      itemCount: totalItems,
+      itemBuilder: (context, index) {
+        // TYPING INDICATOR
+        if (_isTyping &&
+            index == _messages.length) {
+          return _buildTypingIndicator();
+        }
+
+        // MESSAGE
+        final message = _messages[index];
+
+        final isUser =
+            message['sender'] == 'user';
+
+        return _buildMessageBubble(
+          message['message'] ?? '',
+          isUser,
+        );
+      },
+    );
+  }
+
+  // =========================================================
+  // MESSAGE BUBBLE
+  // =========================================================
+
+  Widget _buildMessageBubble(
+    String message,
+    bool isUser,
+  ) {
+    return Align(
+      alignment: isUser
+          ? Alignment.centerRight
+          : Alignment.centerLeft,
+      child: Container(
+        constraints: BoxConstraints(
+          maxWidth:
+              MediaQuery.of(context).size.width * 0.78,
+        ),
+        margin: const EdgeInsets.only(
+          bottom: 12,
+        ),
+        padding: const EdgeInsets.symmetric(
+          horizontal: 16,
+          vertical: 12,
+        ),
+        decoration: BoxDecoration(
+          color: isUser
+              ? AppColors.primary
+              : _surfaceLight,
+          borderRadius: BorderRadius.only(
+            topLeft: const Radius.circular(18),
+            topRight: const Radius.circular(18),
+            bottomLeft: Radius.circular(
+              isUser ? 18 : 4,
+            ),
+            bottomRight: Radius.circular(
+              isUser ? 4 : 18,
+            ),
+          ),
+          border: isUser
+              ? null
+              : Border.all(
+                  color: _border,
+                ),
+          boxShadow: isUser
+              ? [
+                  BoxShadow(
+                    color: AppColors.primary.withValues(
+                      alpha: 0.16,
+                    ),
+                    blurRadius: 12,
+                    offset: const Offset(0, 4),
+                  ),
+                ]
+              : null,
+        ),
+        child: Text(
+          message,
+          style: AppTextStyles.body.copyWith(
+            color: isUser
+                ? Colors.white
+                : const Color(0xFFE5E5EA),
+          ),
+        ),
+      ),
+    );
+  }
+
+  // =========================================================
+  // TYPING INDICATOR
+  // =========================================================
+
+  Widget _buildTypingIndicator() {
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: Container(
+        margin: const EdgeInsets.only(
+          bottom: 12,
+        ),
+        padding: const EdgeInsets.symmetric(
+          horizontal: 16,
+          vertical: 13,
+        ),
+        decoration: BoxDecoration(
+          color: _surfaceLight,
+          borderRadius: const BorderRadius.only(
+            topLeft: Radius.circular(18),
+            topRight: Radius.circular(18),
+            bottomLeft: Radius.circular(4),
+            bottomRight: Radius.circular(18),
+          ),
+          border: Border.all(
+            color: _border,
+          ),
+        ),
+        child: const Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _TypingDot(),
+            SizedBox(width: 5),
+            _TypingDot(),
+            SizedBox(width: 5),
+            _TypingDot(),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // =========================================================
+  // ATTACHMENT MENU
+  // =========================================================
+
+  Widget _buildAttachmentMenu() {
+    return Container(
+      padding: const EdgeInsets.symmetric(
+        vertical: 8,
+      ),
+      decoration: BoxDecoration(
+        color: _surfaceLight,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(
+          color: _border,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(
+              alpha: 0.35,
+            ),
+            blurRadius: 20,
+            offset: const Offset(0, 8),
+          ),
+        ],
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _buildAttachmentItem(
+            icon: Icons.camera_alt_outlined,
+            title: 'Camera',
+            onTap: () {
+              _selectAttachment('Camera');
+            },
+          ),
+          _buildAttachmentItem(
+            icon: Icons.image_outlined,
+            title: 'Photo',
+            onTap: () {
+              _selectAttachment('Photo');
+            },
+          ),
+          _buildAttachmentItem(
+            icon: Icons.attach_file_rounded,
+            title: 'File',
+            onTap: () {
+              _selectAttachment('File');
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
+  // =========================================================
+  // ATTACHMENT ITEM
+  // =========================================================
+
+  Widget _buildAttachmentItem({
+    required IconData icon,
+    required String title,
+    required VoidCallback onTap,
+  }) {
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(
+          horizontal: 14,
+          vertical: 8,
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 34,
+              height: 34,
+              decoration: BoxDecoration(
+                color: _surface,
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Icon(
+                icon,
+                size: 18,
+                color: const Color(0xFFCCCCD2),
+              ),
+            ),
+
+            const SizedBox(width: 12),
+
+            Text(
+              title,
+              style: AppTextStyles.body.copyWith(
+                color: Colors.white,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // =========================================================
   // MESSAGE INPUT
-  // =========================
+  // =========================================================
 
   Widget _buildMessageInput() {
     return Container(
@@ -456,181 +809,201 @@ class _HomeScreenState extends State<HomeScreen> {
         12,
         8,
         12,
-        12,
+        14,
       ),
-      color: AppColors.background,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          // =========================
-          // ATTACHMENT MENU
-          // =========================
+      color: _background,
+      child: SafeArea(
+        top: false,
+        child: Row(
+          crossAxisAlignment:
+              CrossAxisAlignment.end,
+          children: [
+            // =================================================
+            // PLUS BUTTON
+            // =================================================
 
-          if (_isComposerExpanded)
-            Padding(
-              padding: const EdgeInsets.only(
-                left: 12,
-                right: 12,
-                bottom: 12,
+            IconButton(
+              onPressed: _toggleAttachmentMenu,
+              padding: const EdgeInsets.all(8),
+              constraints: const BoxConstraints(
+                minWidth: 40,
+                minHeight: 40,
               ),
+              icon: Icon(
+                _showAttachmentMenu
+                    ? Icons.close_rounded
+                    : Icons.add_rounded,
+                color: const Color(0xFF9A9AA3),
+                size: 24,
+              ),
+            ),
+
+            const SizedBox(width: 2),
+
+            // =================================================
+            // TEXT FIELD
+            // =================================================
+
+            Expanded(
               child: Container(
-                width: double.infinity,
-                padding: const EdgeInsets.symmetric(
-                  vertical: 6,
+                constraints: const BoxConstraints(
+                  minHeight: 46,
                 ),
                 decoration: BoxDecoration(
-                  color: AppColors.background,
-                  borderRadius: BorderRadius.circular(18),
+                  color: _surface,
+                  borderRadius:
+                      BorderRadius.circular(24),
                   border: Border.all(
-                    color: AppColors.border,
+                    color: _border,
                   ),
                 ),
-                child: Column(
-                  children: [
-                    _buildComposerAction(
-                      icon: Icons.camera_alt_outlined,
-                      title: 'Camera',
-                      onTap: () {
-                        _handleAttachment('camera');
-                      },
+                child: TextField(
+                  controller: _messageController,
+                  style: const TextStyle(
+                    color: Colors.white,
+                  ),
+                  cursorColor: AppColors.primary,
+                  onChanged: (value) {
+                    setState(() {
+                      _hasText =
+                          value.trim().isNotEmpty;
+                    });
+                  },
+                  onTap: () {
+                    if (_showAttachmentMenu) {
+                      setState(() {
+                        _showAttachmentMenu = false;
+                      });
+                    }
+                  },
+                  onSubmitted: (_) {
+                    if (_hasText && !_isTyping) {
+                      _sendMessage();
+                    }
+                  },
+                  textInputAction:
+                      TextInputAction.send,
+                  minLines: 1,
+                  maxLines: 5,
+                  decoration: InputDecoration(
+                    hintText: 'Message Upatt...',
+                    hintStyle:
+                        AppTextStyles.bodySecondary
+                            .copyWith(
+                      color: const Color(0xFF777780),
                     ),
-
-                    _buildComposerAction(
-                      icon: Icons.photo_outlined,
-                      title: 'Photo',
-                      onTap: () {
-                        _handleAttachment('photo');
-                      },
+                    border: InputBorder.none,
+                    contentPadding:
+                        const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 12,
                     ),
-
-                    _buildComposerAction(
-                      icon: Icons.attach_file_rounded,
-                      title: 'File',
-                      onTap: () {
-                        _handleAttachment('file');
-                      },
-                    ),
-                  ],
+                  ),
                 ),
               ),
             ),
 
-          // =========================
-          // MESSAGE COMPOSER
-          // =========================
+            const SizedBox(width: 6),
 
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              Expanded(
-                child: Container(
-                  decoration: BoxDecoration(
-                    color: AppColors.surface,
-                    borderRadius:
-                        BorderRadius.circular(28),
-                    border: Border.all(
-                      color: AppColors.border,
+            // =================================================
+            // MIC / SEND
+            // =================================================
+
+            Container(
+              width: 46,
+              height: 46,
+              decoration: BoxDecoration(
+                color: AppColors.primary,
+                shape: BoxShape.circle,
+                boxShadow: [
+                  BoxShadow(
+                    color: AppColors.primary.withValues(
+                      alpha: 0.22,
                     ),
+                    blurRadius: 12,
+                    spreadRadius: 1,
                   ),
-                  child: Row(
-                    crossAxisAlignment:
-                        CrossAxisAlignment.end,
-                    children: [
-                      // PLUS BUTTON
-                      IconButton(
-                        onPressed: () {
-                          setState(() {
-                            _isComposerExpanded =
-                                !_isComposerExpanded;
-                          });
-                        },
-                        icon: Icon(
-                          _isComposerExpanded
-                              ? Icons.close_rounded
-                              : Icons.add_rounded,
-                        ),
-                        color: AppColors.textSecondary,
-                        tooltip: 'Add',
-                      ),
-
-                      // TEXT FIELD
-                      Expanded(
-                        child: TextField(
-                          controller: _messageController,
-                          textInputAction:
-                              TextInputAction.newline,
-                          minLines: 1,
-                          maxLines: 5,
-                          onChanged: (value) {
-                            setState(() {
-                              _hasText =
-                                  value.trim().isNotEmpty;
-                            });
-                          },
-                          decoration:
-                              const InputDecoration(
-                            hintText:
-                                'Message Upatt...',
-                            border: InputBorder.none,
-                            contentPadding:
-                                EdgeInsets.symmetric(
-                              horizontal: 4,
-                              vertical: 14,
-                            ),
-                          ),
-                        ),
-                      ),
-
-                      // MIC BUTTON
-                      IconButton(
-                        onPressed: () {
-                          // Voice input akan dibuat nanti.
-                        },
-                        icon: const Icon(
-                          Icons.mic_none_rounded,
-                        ),
-                        color: AppColors.textSecondary,
-                        tooltip: 'Voice input',
-                      ),
-                    ],
-                  ),
+                ],
+              ),
+              child: IconButton(
+                onPressed: _isTyping
+                    ? null
+                    : (_hasText
+                        ? _sendMessage
+                        : _startVoiceInput),
+                padding: EdgeInsets.zero,
+                icon: Icon(
+                  _hasText
+                      ? Icons.arrow_upward_rounded
+                      : Icons.mic_none_rounded,
+                  color: Colors.white,
+                  size: 21,
                 ),
               ),
-
-              const SizedBox(width: 8),
-
-              // =========================
-              // SEND / VOICE BUTTON
-              // =========================
-
-              Container(
-                width: 48,
-                height: 48,
-                decoration: BoxDecoration(
-                  color: AppColors.primary,
-                  shape: BoxShape.circle,
-                ),
-                child: IconButton(
-                  onPressed: _hasText
-                      ? _sendMessage
-                      : () {
-                          // Voice chat akan dibuat nanti.
-                        },
-                  icon: Icon(
-                    _hasText
-                        ? Icons.arrow_upward_rounded
-                        : Icons.graphic_eq_rounded,
-                    color: Colors.white,
-                  ),
-                  tooltip: _hasText
-                      ? 'Send'
-                      : 'Voice chat',
-                ),
-              ),
-            ],
-          ),
-        ],
+            ),
+          ],
+        ),
       ),
+    );
+  }
+}
+
+// =============================================================
+// TYPING DOT
+// =============================================================
+
+class _TypingDot extends StatefulWidget {
+  const _TypingDot();
+
+  @override
+  State<_TypingDot> createState() => _TypingDotState();
+}
+
+class _TypingDotState extends State<_TypingDot>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(
+        milliseconds: 900,
+      ),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, child) {
+        final phase =
+            (_controller.value * 3) % 1;
+
+        final opacity =
+            0.35 + (phase * 0.65);
+
+        return Opacity(
+          opacity: opacity.clamp(0.35, 1.0),
+          child: Container(
+            width: 6,
+            height: 6,
+            decoration: const BoxDecoration(
+              color: Color(0xFF8F8F98),
+              shape: BoxShape.circle,
+            ),
+          ),
+        );
+      },
     );
   }
 }
