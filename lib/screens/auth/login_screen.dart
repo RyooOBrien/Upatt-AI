@@ -4,7 +4,6 @@ import 'package:flutter/material.dart';
 
 import '../../core/theme/app_colors.dart';
 import '../../core/theme/app_text_styles.dart';
-import '../home/home_screen.dart';
 import 'forgot_password_screen.dart';
 import 'register_screen.dart';
 
@@ -122,14 +121,7 @@ class _LoginScreenState extends State<LoginScreen> {
         password: _passwordController.text,
       );
 
-      if (!mounted) return;
-
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(
-          builder: (context) => const HomeScreen(),
-        ),
-      );
+      // Navigasi ke HomeScreen ditangani otomatis oleh AuthGate.
     } on FirebaseAuthException catch (e) {
       if (!mounted) return;
 
@@ -220,14 +212,7 @@ class _LoginScreenState extends State<LoginScreen> {
         );
       }
 
-      if (!mounted) return;
-
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(
-          builder: (context) => const HomeScreen(),
-        ),
-      );
+      // Navigasi ke HomeScreen ditangani otomatis oleh AuthGate.
     } on FirebaseAuthException catch (e) {
       if (!mounted) return;
 

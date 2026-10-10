@@ -1,10 +1,11 @@
 import 'package:device_preview/device_preview.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import 'core/theme/app_theme.dart';
 import 'firebase_options.dart';
-import 'screens/auth/login_screen.dart';
+import 'screens/auth/auth_gate.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -15,7 +16,8 @@ Future<void> main() async {
 
   runApp(
     DevicePreview(
-      enabled: true,
+      // Hanya aktif saat development, tidak ikut ke build rilis.
+      enabled: !kReleaseMode,
       builder: (context) => const AIChatbotApp(),
     ),
   );
@@ -28,9 +30,9 @@ class AIChatbotApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: 'AI Chatbot',
+      title: 'Upatt',
       theme: AppTheme.lightTheme,
-      home: const LoginScreen(),
+      home: const AuthGate(),
     );
   }
 }
