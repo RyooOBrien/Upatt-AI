@@ -5,18 +5,24 @@
     "lint": "eslint .",
     "serve": "firebase emulators:start --only functions",
     "shell": "firebase functions:shell",
-    "start": "npm run shell",
+    "start": "node index.js",
+    "dev": "node index.js",
     "deploy": "firebase deploy --only functions",
     "logs": "firebase functions:log"
   },
   "engines": {
-    "node": "22"
+    "node": "24"
   },
   "main": "index.js",
   "dependencies": {
-    "firebase-admin": "^13.6.0",
+    "cors": "^2.8.6",
+    "dotenv": "^18.0.6",
+    "express": "^5.3.0",
+    "express-rate-limit": "^8.7.1",
+    "firebase-admin": "^13.10.0",
     "firebase-functions": "^7.0.0",
-    "resend": "^6.32.1"
+    "helmet": "^8.3.0",
+    "openai": "^7.31.0"
   },
   "devDependencies": {
     "eslint": "^8.15.0",
