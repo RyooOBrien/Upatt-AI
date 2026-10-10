@@ -63,6 +63,23 @@ class _HomeScreenState extends State<HomeScreen>
   bool _showAttachmentMenu = false;
   bool _isTyping = false;
   bool _showHistorySidebar = false;
+  String _historySearchQuery = '';
+
+  // Mode pesan sementara: percakapan tidak disimpan ke riwayat.
+  bool _isTemporaryChat = false;
+
+  // Snapshot chat normal agar bisa dipulihkan saat keluar dari mode sementara.
+  List<Map<String, String>>? _temporaryPreviousMessages;
+  String? _temporaryPreviousChatId;
+  String _temporaryPreviousMemorySummary = '';
+  int _temporaryPreviousSummarizedCount = 0;
+
+  void _clearTemporarySnapshot() {
+    _temporaryPreviousMessages = null;
+    _temporaryPreviousChatId = null;
+    _temporaryPreviousMemorySummary = '';
+    _temporaryPreviousSummarizedCount = 0;
+  }
 
   // Menandai request AI yang sedang aktif. Nilai ini berubah saat pengguna
   // membuka chat lain / memulai chat baru sehingga respons lama dibatalkan.
@@ -112,132 +129,142 @@ class _HomeScreenState extends State<HomeScreen>
   // SEND MESSAGE
   // =========================================================
 
-  
-  
-  Future<void> _sendMessage() async {
-    final message = _messageController.text.trim();
+      Future<void> _sendMessage() async {
+        final message = _messageController.text.trim();
 
-    if (message.isEmpty || _isTyping) return;
+        if (message.isEmpty || _isTyping) return;
 
-    FocusScope.of(context).unfocus();
+        FocusScope.of(context).unfocus();
 
-    final requestId = ++_activeRequestId;
+        final requestId = ++_activeRequestId;
+        final isTemporary = _isTemporaryChat;
 
-    setState(() {
-      _messages.add({
-        'sender': 'user',
-        'message': message,
-      });
-
-      _messageController.clear();
-      _hasText = false;
-      _showAttachmentMenu = false;
-      _isTyping = true;
-    });
-
-    _scrollToBottom();
-
-    try {
-      await _ensureChatExists();
-
-      final chatId = _currentChatId!;
-
-      // Simpan pesan pengguna.
-      await _chatRepository.saveMessage(
-        chatId: chatId,
-        role: 'user',
-        content: message,
-      );
-
-      // Kirim konteks percakapan sebelumnya ke backend AI.
-      // Hanya kirim pesan yang belum diringkas sebagai memori,
-      // lalu batasi jumlahnya agar tidak melewati batas backend.
-      final start = _summarizedCount.clamp(
-        0,
-        _messages.length - 1,
-      );
-
-      // Pesan terakhir adalah pesan pengguna yang baru dikirim.
-      // Jangan kirim dua kali.
-      final pendingHistory = _messages.sublist(
-        start,
-        _messages.length - 1,
-      );
-
-      final history = pendingHistory.length > _maxHistoryMessages
-          ? pendingHistory.sublist(
-              pendingHistory.length - _maxHistoryMessages,
-            )
-          : pendingHistory;
-
-      final historyPayload = history
-          .map((item) => <String, String>{
-                'role': item['sender'] == 'upatt'
-                    ? 'assistant'
-                    : 'user',
-                'content': item['message'] ?? '',
-              })
-          .toList();
-
-      // Kirim pesan & tampilkan jawaban secara bertahap (streaming).
-      final reply = await _requestAiReply(
-        message: message,
-        history: historyPayload,
-        requestId: requestId,
-      );
-
-      // Simpan jawaban AI.
-      await _chatRepository.saveMessage(
-        chatId: chatId,
-        role: 'assistant',
-        content: reply,
-      );
-
-      if (!mounted || requestId != _activeRequestId) return;
-
-      // Jadikan pesan pertama sebagai judul chat.
-      if (_messages.length == 2) {
-        final title = message.length > 35
-            ? '${message.substring(0, 35)}...'
-            : message;
-
-        await _chatRepository.updateChatTitle(
-          chatId,
-          title,
-        );
-      }
-
-      // Perbarui memori percakapan jika sudah cukup panjang.
-      await _updateMemory(chatId);
-    } catch (error, stackTrace) {
-      debugPrint('Upatt chat error: $error');
-      debugPrintStack(stackTrace: stackTrace);
-
-      if (!mounted || requestId != _activeRequestId) return;
-
-      final errorText = error
-          .toString()
-          .replaceFirst('Exception: ', '');
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            errorText.isEmpty
-                ? 'Gagal mengirim pesan atau menyimpan chat.'
-                : errorText,
-          ),
-        ),
-      );
-    } finally {
-      if (mounted && requestId == _activeRequestId) {
         setState(() {
-          _isTyping = false;
+          _messages.add({
+            'sender': 'user',
+            'message': message,
+          });
+
+          _messageController.clear();
+          _hasText = false;
+          _showAttachmentMenu = false;
+          _isTyping = true;
         });
 
         _scrollToBottom();
+
+        try {
+          // Chat biasa disimpan; chat sementara tidak.
+          String? chatId;
+
+          if (!isTemporary) {
+            await _ensureChatExists();
+
+            if (!mounted || requestId != _activeRequestId) return;
+
+            chatId = _currentChatId!;
+
+            await _chatRepository.saveMessage(
+              chatId: chatId,
+              role: 'user',
+              content: message,
+            );
+
+            if (!mounted || requestId != _activeRequestId) return;
+          }
+
+          // Siapkan riwayat percakapan untuk konteks AI.
+          final start = _summarizedCount.clamp(
+            0,
+            _messages.length - 1,
+          );
+
+          final pendingHistory = _messages.sublist(
+            start,
+            _messages.length - 1,
+          );
+
+          final history = pendingHistory.length > _maxHistoryMessages
+              ? pendingHistory.sublist(
+                  pendingHistory.length - _maxHistoryMessages,
+                )
+              : pendingHistory;
+
+          final historyPayload = history
+              .map((item) => <String, String>{
+                    'role': item['sender'] == 'upatt'
+                        ? 'assistant'
+                        : 'user',
+                    'content': item['message'] ?? '',
+                  })
+              .toList();
+
+          // Kirim pesan ke AI dengan streaming.
+          final reply = await _requestAiReply(
+            message: message,
+            history: historyPayload,
+            requestId: requestId,
+          );
+
+          if (!mounted || requestId != _activeRequestId) return;
+
+          // Simpan jawaban AI hanya untuk chat biasa.
+          if (!isTemporary && chatId != null) {
+            await _chatRepository.saveMessage(
+              chatId: chatId,
+              role: 'assistant',
+              content: reply,
+            );
+
+            if (!mounted || requestId != _activeRequestId) return;
+
+            // Jadikan pesan pertama sebagai judul chat.
+            if (_messages.length == 2) {
+              final title = message.length > 35
+                  ? '${message.substring(0, 35)}...'
+                  : message;
+
+              await _chatRepository.updateChatTitle(
+                chatId,
+                title,
+              );
+            }
+
+            if (!mounted || requestId != _activeRequestId) return;
+
+            // Perbarui memori hanya untuk chat yang tersimpan.
+            await _updateMemory(chatId);
+          }
+        } catch (error, stackTrace) {
+          debugPrint('Upatt chat error: $error');
+          debugPrintStack(stackTrace: stackTrace);
+
+          if (!mounted || requestId != _activeRequestId) return;
+
+          final errorText = error
+              .toString()
+              .replaceFirst('Exception: ', '');
+
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                errorText.isEmpty
+                    ? 'Gagal mengirim pesan.'
+                    : errorText,
+              ),
+            ),
+          );
+        } finally {
+          if (mounted && requestId == _activeRequestId) {
+            setState(() {
+              _isTyping = false;
+            });
+
+            _scrollToBottom();
+          }
+        }
       }
-    }
-  }
+
 
   // =========================================================
   // STREAMING REPLY
@@ -364,6 +391,7 @@ class _HomeScreenState extends State<HomeScreen>
 
   void _newChat() {
     _activeRequestId++;
+    _clearTemporarySnapshot();
 
     setState(() {
       _messages.clear();
@@ -373,7 +401,75 @@ class _HomeScreenState extends State<HomeScreen>
       _isTyping = false;
       _showAttachmentMenu = false;
       _stickToBottom = true;
+      _isTemporaryChat = false;
+      _hasText = false;
+      _messageController.clear();
     });
+  }
+
+  // Tombol header berfungsi sebagai toggle masuk/keluar dari pesan sementara.
+  void _startTemporaryChat() {
+    _activeRequestId++;
+
+    if (_isTemporaryChat) {
+      final previousMessages = _temporaryPreviousMessages;
+      final previousChatId = _temporaryPreviousChatId;
+      final previousMemorySummary = _temporaryPreviousMemorySummary;
+      final previousSummarizedCount = _temporaryPreviousSummarizedCount;
+
+      setState(() {
+        _isTemporaryChat = false;
+        _messages
+          ..clear()
+          ..addAll(previousMessages ?? const <Map<String, String>>[]);
+        _currentChatId = previousChatId;
+        _memorySummary = previousMemorySummary;
+        _summarizedCount = previousSummarizedCount;
+        _isTyping = false;
+        _hasText = false;
+        _showAttachmentMenu = false;
+        _showHistorySidebar = false;
+        _stickToBottom = true;
+        _messageController.clear();
+        _clearTemporarySnapshot();
+      });
+
+      _scrollToBottom();
+      return;
+    }
+
+    // Simpan chat normal sebelum beralih ke sesi sementara.
+    _temporaryPreviousMessages = _messages
+        .map((message) => Map<String, String>.from(message))
+        .toList();
+    _temporaryPreviousChatId = _currentChatId;
+    _temporaryPreviousMemorySummary = _memorySummary;
+    _temporaryPreviousSummarizedCount = _summarizedCount;
+
+    setState(() {
+      _isTemporaryChat = true;
+      _messages.clear();
+      _currentChatId = null;
+      _memorySummary = '';
+      _summarizedCount = 0;
+      _isTyping = false;
+      _hasText = false;
+      _showAttachmentMenu = false;
+      _showHistorySidebar = false;
+      _stickToBottom = true;
+      _messageController.clear();
+    });
+
+    _scrollToBottom();
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text(
+          'Pesan sementara aktif. Chat ini tidak disimpan ke riwayat.',
+        ),
+        duration: Duration(seconds: 2),
+      ),
+    );
   }
 
   // =========================================================
@@ -398,8 +494,11 @@ class _HomeScreenState extends State<HomeScreen>
 
       if (!mounted) return;
 
+      _clearTemporarySnapshot();
+
       setState(() {
         _currentChatId = chatId;
+        _isTemporaryChat = false;
         _messages
           ..clear()
           ..addAll(
@@ -529,6 +628,117 @@ class _HomeScreenState extends State<HomeScreen>
   // =========================================================  
 
   
+Future<void> _showChatSearchDialog() async {
+  final user = FirebaseAuth.instance.currentUser;
+  if (user == null) return;
+
+  final controller = TextEditingController();
+  await showDialog<void>(
+    context: context,
+    barrierColor: Colors.black54,
+    builder: (dialogContext) {
+      String query = '';
+      return StatefulBuilder(
+        builder: (context, setDialogState) {
+          final chatsStream = FirebaseFirestore.instance
+              .collection('users')
+              .doc(user.uid)
+              .collection('chats')
+              .orderBy('updatedAt', descending: true)
+              .snapshots();
+
+          return Dialog(
+            backgroundColor: const Color(0xFF171719),
+            insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 28),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+            child: SizedBox(
+              width: 520,
+              height: MediaQuery.of(context).size.height * 0.68,
+              child: Padding(
+                padding: const EdgeInsets.all(18),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        const Expanded(
+                          child: Text(
+                            'Cari percakapan',
+                            style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w700),
+                          ),
+                        ),
+                        IconButton(
+                          tooltip: 'Tutup',
+                          onPressed: () => Navigator.of(dialogContext).pop(),
+                          icon: const Icon(Icons.close_rounded, color: Colors.white70),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+                    TextField(
+                      controller: controller,
+                      autofocus: true,
+                      onChanged: (value) => setDialogState(() => query = value.trim().toLowerCase()),
+                      style: const TextStyle(color: Colors.white),
+                      cursorColor: AppColors.primary,
+                      decoration: InputDecoration(
+                        hintText: 'Cari chat',
+                        hintStyle: const TextStyle(color: Color(0xFF8F8F98)),
+                        prefixIcon: const Icon(Icons.search_rounded, color: Color(0xFF9A9AA3)),
+                        filled: true,
+                        fillColor: const Color(0xFF242428),
+                        contentPadding: const EdgeInsets.symmetric(vertical: 14),
+                        enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: const BorderSide(color: Color(0xFF38383F))),
+                        focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: BorderSide(color: AppColors.primary)),
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+                    const Text('RIWAYAT CHAT', style: TextStyle(color: Color(0xFF85858F), fontSize: 11, fontWeight: FontWeight.w600, letterSpacing: 1)),
+                    const SizedBox(height: 8),
+                    Expanded(
+                      child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                        stream: chatsStream,
+                        builder: (context, snapshot) {
+                          if (snapshot.hasError) return const Center(child: Text('Gagal memuat riwayat.', style: TextStyle(color: Colors.white70)));
+                          if (snapshot.connectionState == ConnectionState.waiting) return const Center(child: CircularProgressIndicator());
+                          final docs = (snapshot.data?.docs ?? []).where((doc) {
+                            final title = (doc.data()['title'] as String? ?? 'New Chat').toLowerCase();
+                            return query.isEmpty || title.contains(query);
+                          }).toList();
+                          if (docs.isEmpty) return Center(child: Text(query.isEmpty ? 'Belum ada percakapan.' : 'Tidak ada chat yang cocok.', style: const TextStyle(color: Colors.white54)));
+                          return ListView.builder(
+                            itemCount: docs.length,
+                            itemBuilder: (context, index) {
+                              final doc = docs[index];
+                              final title = doc.data()['title'] as String? ?? 'New Chat';
+                              return ListTile(
+                                contentPadding: const EdgeInsets.symmetric(horizontal: 4),
+                                leading: const Icon(Icons.chat_bubble_outline_rounded, color: Color(0xFFAAAAB4), size: 20),
+                                title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white, fontSize: 14)),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                                onTap: () async {
+                                  Navigator.of(dialogContext).pop();
+                                  await _openChat(doc.id);
+                                  if (mounted) setState(() => _showHistorySidebar = false);
+                                },
+                              );
+                            },
+                          );
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          );
+        },
+      );
+    },
+  );
+  controller.dispose();
+}
+
 Widget _buildHistorySidebar() {
   final user = FirebaseAuth.instance.currentUser;
 
@@ -565,6 +775,14 @@ Widget _buildHistorySidebar() {
                   ),
                 ),
                 IconButton(
+                  tooltip: 'Cari percakapan',
+                  onPressed: _showChatSearchDialog,
+                  icon: const Icon(
+                    Icons.search_rounded,
+                    color: Colors.white,
+                  ),
+                ),
+                IconButton(
                   tooltip: 'Close sidebar',
                   onPressed: _toggleHistorySidebar,
                   icon: const Icon(
@@ -581,7 +799,7 @@ Widget _buildHistorySidebar() {
             child: InkWell(
               onTap: () {
                 _newChat();
-                _toggleHistorySidebar();
+                setState(() => _showHistorySidebar = false);
               },
               borderRadius: BorderRadius.circular(12),
               child: Container(
@@ -598,23 +816,19 @@ Widget _buildHistorySidebar() {
                 ),
                 child: const Row(
                   children: [
-                    Icon(
-                      Icons.add_rounded,
-                      color: AppColors.primary,
-                    ),
+                    Icon(Icons.add_rounded, color: AppColors.primary),
                     SizedBox(width: 10),
-                    Text(
-                      'New Chat',
-                      style: TextStyle(color: Colors.white),
-                    ),
+                    Text('New Chat', style: TextStyle(color: Colors.white)),
                   ],
                 ),
               ),
             ),
           ),
 
+          const SizedBox(height: 8),
+
           const Padding(
-            padding: EdgeInsets.fromLTRB(16, 24, 16, 10),
+            padding: EdgeInsets.fromLTRB(16, 22, 16, 10),
             child: Text(
               'RECENT CHATS',
               style: TextStyle(
@@ -648,14 +862,24 @@ Widget _buildHistorySidebar() {
                   );
                 }
 
-                final chats = snapshot.data?.docs ?? [];
+                final allChats = snapshot.data?.docs ?? [];
+                final chats = allChats.where((chat) {
+                  if (_historySearchQuery.isEmpty) return true;
+                  final title = (chat.data()['title'] as String? ?? 'New Chat')
+                      .toLowerCase();
+                  return title.contains(_historySearchQuery);
+                }).toList();
 
                 if (chats.isEmpty) {
-                  return const Padding(
-                    padding: EdgeInsets.all(16),
+                  return Padding(
+                    padding: const EdgeInsets.all(16),
                     child: Text(
-                      'Belum ada percakapan.',
-                      style: TextStyle(color: Colors.white54),
+                      _historySearchQuery.isEmpty
+                          ? 'Belum ada percakapan.'
+                          : 'Tidak ada chat yang cocok.',
+                      style: const TextStyle(
+                        color: Colors.white54,
+                      ),
                     ),
                   );
                 }
@@ -727,24 +951,77 @@ Widget _buildHistorySidebar() {
           const Divider(color: Color(0xFF2A2A2F)),
 
           Padding(
-            padding: const EdgeInsets.all(16),
+            padding: const EdgeInsets.fromLTRB(12, 12, 12, 10),
             child: Row(
               children: [
-                const Icon(
-                  Icons.account_circle_outlined,
-                  color: Colors.white70,
-                ),
-                const SizedBox(width: 10),
                 Expanded(
-                  child: Text(
-                    user.displayName ??
-                        user.email ??
-                        'User',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      color: Colors.white70,
-                      fontSize: 12,
+                  child: SizedBox(
+                    height: 48,
+                    child: ElevatedButton.icon(
+                      onPressed: () {
+                        _newChat();
+                        setState(() => _showHistorySidebar = false);
+                      },
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppColors.primary,
+                        foregroundColor: Colors.white,
+                        elevation: 0,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(24),
+                        ),
+                      ),
+                      icon: const Icon(Icons.edit_outlined, size: 20),
+                      label: const Text(
+                        'Obrolan',
+                        style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                PopupMenuButton<String>(
+                  tooltip: 'Akun',
+                  color: _surfaceLight,
+                  onSelected: (value) {
+                    if (value == 'logout') _logout();
+                  },
+                  itemBuilder: (context) => [
+                    PopupMenuItem<String>(
+                      value: 'logout',
+                      child: Row(
+                        children: [
+                          const Icon(Icons.logout_rounded, color: Colors.white70, size: 19),
+                          const SizedBox(width: 10),
+                          Text(
+                            'Logout',
+                            style: AppTextStyles.body.copyWith(color: Colors.white),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                  child: Container(
+                    width: 44,
+                    height: 44,
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: const Color(0xFF00A86B),
+                      border: Border.all(color: const Color(0xFF414148), width: 3),
+                    ),
+                    child: Text(
+                      ((user.displayName?.trim().isNotEmpty == true)
+                              ? user.displayName!.trim()
+                              : (user.email?.trim().isNotEmpty == true
+                                  ? user.email!.trim()
+                                  : 'U'))
+                          .substring(0, 1)
+                          .toUpperCase(),
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w700,
+                        fontSize: 14,
+                      ),
                     ),
                   ),
                 ),
@@ -818,6 +1095,36 @@ Widget _buildHistorySidebar() {
       ),
     );
   }
+  
+    Widget _buildHeaderButton({
+      required IconData icon,
+      required String tooltip,
+      required VoidCallback onPressed,
+    }) {
+      return Container(
+        width: 44,
+        height: 44,
+        decoration: BoxDecoration(
+          color: const Color(0xFF292929),
+          shape: BoxShape.circle,
+          border: Border.all(
+            color: const Color(0xFF444444),
+            width: 1,
+          ),
+        ),
+        child: IconButton(
+          onPressed: onPressed,
+          tooltip: tooltip,
+          padding: EdgeInsets.zero,
+          icon: Icon(
+            icon,
+            color: Colors.white,
+            size: 23,
+          ),
+        ),
+      );
+    }
+
 
   // =========================================================
   // BUILD
@@ -840,132 +1147,35 @@ Widget _buildHistorySidebar() {
       // =====================================================
 
       appBar: AppBar(
-        backgroundColor: _background,
-        surfaceTintColor: Colors.transparent,
-        elevation: 0,
-        automaticallyImplyLeading: false,
-        titleSpacing: 8,
+      backgroundColor: _background,
+      surfaceTintColor: Colors.transparent,
+      elevation: 0,
+      automaticallyImplyLeading: false,
+      titleSpacing: 16,
 
-        title: Row(
-          children: [
-            // MENU
-            IconButton(
-              onPressed: _toggleHistorySidebar,
-              icon: const Icon(
-                Icons.menu_rounded,
-                size: 22,
-                color: Colors.white,
-              ),
-            ),
-
-            // UPATT ICON
-            Container(
-              width: 34,
-              height: 34,
-              decoration: BoxDecoration(
-                color: AppColors.primary,
-                borderRadius: BorderRadius.circular(10),
-                boxShadow: [
-                  BoxShadow(
-                    color: AppColors.primary.withValues(
-                      alpha: 0.25,
-                    ),
-                    blurRadius: 12,
-                    spreadRadius: 1,
-                  ),
-                ],
-              ),
-              child: const Icon(
-                Icons.auto_awesome_rounded,
-                color: Colors.white,
-                size: 18,
-              ),
-            ),
-
-            const SizedBox(width: 8),
-
-            // UPATT NAME
-            Text(
-              'Upatt',
-              style: AppTextStyles.body.copyWith(
-                color: Colors.white,
-                fontWeight: FontWeight.w700,
-              ),
-            ),
-          ],
-        ),
+      title: Row(
+        children: [
+          // Tombol sidebar / riwayat chat
+          _buildHeaderButton(
+            icon: Icons.menu_rounded,
+            tooltip: 'Riwayat chat',
+            onPressed: _toggleHistorySidebar,
+          ),
+        ],
+      ),
 
         actions: [
-          // NEW CHAT
-          IconButton(
-            onPressed: _newChat,
-            tooltip: 'New chat',
-            icon: const Icon(
-              Icons.edit_square,
-              size: 21,
-              color: Colors.white,
-            ),
+          // Tombol pesan sementara
+          _buildHeaderButton(
+            icon: _isTemporaryChat
+                ? Icons.chat_bubble_outline_rounded
+                : Icons.forum_outlined,
+            tooltip: _isTemporaryChat
+                ? 'Kembali ke chat sebelumnya'
+                : 'Pesan sementara',
+            onPressed: _startTemporaryChat,
           ),
-
-          // MORE
-          PopupMenuButton<String>(
-            icon: const Icon(
-              Icons.more_vert_rounded,
-              color: Colors.white,
-            ),
-            color: _surfaceLight,
-            onSelected: (value) {
-              if (value == 'new_chat') {
-                _newChat();
-              }
-
-              if (value == 'logout') {
-                _logout();
-              }
-            },
-            itemBuilder: (context) {
-              return [
-                PopupMenuItem(
-                  value: 'new_chat',
-                  child: Row(
-                    children: [
-                      const Icon(
-                        Icons.add_comment_outlined,
-                        color: Colors.white,
-                      ),
-                      const SizedBox(width: 10),
-                      Text(
-                        'New chat',
-                        style: AppTextStyles.body.copyWith(
-                          color: Colors.white,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                PopupMenuItem(
-                  value: 'logout',
-                  child: Row(
-                    children: [
-                      const Icon(
-                        Icons.logout_rounded,
-                        color: Colors.white,
-                      ),
-                      const SizedBox(width: 10),
-                      Text(
-                        'Logout',
-                        style: AppTextStyles.body.copyWith(
-                          color: Colors.white,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ];
-            },
-          ),
-
-          const SizedBox(width: 4),
+          const SizedBox(width: 12),
         ],
       ),
 
@@ -984,7 +1194,9 @@ Widget _buildHistorySidebar() {
               children: [
                 Expanded(
                   child: _messages.isEmpty
-                      ? _buildEmptyState(userName)
+                      ? (_isTemporaryChat
+                          ? _buildTemporaryEmptyState()
+                          : _buildEmptyState(userName))
                       : _buildMessageList(),
                 ),
                 _buildMessageInput(),
@@ -1039,6 +1251,63 @@ Widget _buildHistorySidebar() {
   // EMPTY STATE
   // =========================================================
 
+  Widget _buildTemporaryEmptyState() {
+    return Center(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 24),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(
+              Icons.visibility_off_outlined,
+              size: 34,
+              color: Colors.white70,
+            ),
+            const SizedBox(height: 24),
+            const Text(
+              'Obrolan sementara',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 22,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(height: 12),
+            const Text(
+              'Obrolan ini tidak akan muncul di riwayat.',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: Colors.white60,
+                fontSize: 14,
+                height: 1.5,
+              ),
+            ),
+            const SizedBox(height: 18),
+            TextButton(
+              onPressed: () {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text(
+                      'Pesan sementara tidak disimpan ke riwayat chat.',
+                    ),
+                  ),
+                );
+              },
+              child: const Text(
+                'Pelajari selengkapnya',
+                style: TextStyle(
+                  color: Colors.white70,
+                  decoration: TextDecoration.underline,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildEmptyState(String userName) {
     return Center(
       child: SingleChildScrollView(
@@ -1048,34 +1317,16 @@ Widget _buildHistorySidebar() {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            // ICON
-            Container(
-              width: 72,
-              height: 72,
-              decoration: BoxDecoration(
-                color: AppColors.primary.withValues(
-                  alpha: 0.12,
-                ),
-                borderRadius: BorderRadius.circular(22),
-                border: Border.all(
-                  color: AppColors.primary.withValues(
-                    alpha: 0.18,
-                  ),
-                ),
-                boxShadow: [
-                  BoxShadow(
-                    color: AppColors.primary.withValues(
-                      alpha: 0.12,
-                    ),
-                    blurRadius: 24,
-                    spreadRadius: 2,
-                  ),
-                ],
-              ),
-              child: const Icon(
+            // LOGO UPATT
+            Image.asset(
+              'assets/images/upatt_logo.png',
+              width: 144,
+              height: 144,
+              fit: BoxFit.contain,
+              errorBuilder: (context, error, stackTrace) => Icon(
                 Icons.auto_awesome_rounded,
                 color: AppColors.primary,
-                size: 36,
+                size: 64,
               ),
             ),
 
