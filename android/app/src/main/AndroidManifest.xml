@@ -2,6 +2,10 @@
     <!-- Diperlukan untuk akses jaringan (Firebase + backend AI). -->
     <uses-permission android:name="android.permission.INTERNET"/>
 
+    <!-- Kamera in-app (paket `camera`) untuk fitur lampiran foto. -->
+    <uses-permission android:name="android.permission.CAMERA"/>
+    <uses-feature android:name="android.hardware.camera" android:required="false"/>
+
     <application
         android:label="Upatt"
         android:name="${applicationName}"

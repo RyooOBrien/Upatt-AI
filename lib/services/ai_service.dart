@@ -16,9 +16,31 @@ class AiService {
   static const String _configuredBaseUrl =
       String.fromEnvironment('API_BASE_URL');
 
+  // Alamat backend yang bisa diubah saat runtime (lewat menu pengaturan).
+  // Berguna saat debugging di HP fisik, karena 10.0.2.2 hanya ada di emulator.
+  static String? _runtimeBaseUrl;
+
+  /// Atur alamat backend saat runtime. Kosong berarti kembali ke default.
+  static void setRuntimeBaseUrl(String? url) {
+    var trimmed = url?.trim() ?? '';
+
+    // Buang garis miring di akhir agar tidak menjadi "...//api/chat".
+    while (trimmed.endsWith('/')) {
+      trimmed = trimmed.substring(0, trimmed.length - 1);
+    }
+
+    _runtimeBaseUrl = trimmed.isEmpty ? null : trimmed;
+  }
+
   static String get baseUrl {
     if (_configuredBaseUrl.isNotEmpty) {
       return _configuredBaseUrl;
+    }
+
+    final runtime = _runtimeBaseUrl;
+
+    if (runtime != null) {
+      return runtime;
     }
 
     // 10.0.2.2 adalah alias localhost milik Android Emulator.
@@ -82,11 +104,13 @@ class AiService {
     required String message,
     List<Map<String, String>> history = const [],
     String memorySummary = '',
+    List<String> images = const [],
   }) async {
     final data = await _post('/api/chat', {
       'message': message,
       'history': history,
       'memorySummary': memorySummary,
+      if (images.isNotEmpty) 'images': images,
     });
 
     return data['reply'] as String;
@@ -98,6 +122,7 @@ class AiService {
     required String message,
     List<Map<String, String>> history = const [],
     String memorySummary = '',
+    List<String> images = const [],
   }) async* {
     final token = await _getIdToken();
     final client = http.Client();
@@ -116,6 +141,7 @@ class AiService {
           'message': message,
           'history': history,
           'memorySummary': memorySummary,
+          if (images.isNotEmpty) 'images': images,
           'stream': true,
         });
 
@@ -208,5 +234,16 @@ class AiService {
     });
 
     return data['summary'] as String;
+  }
+
+  // Membuat judul singkat sesi percakapan dari topik utama.
+  static Future<String> generateTitle({
+    required List<Map<String, String>> messages,
+  }) async {
+    final data = await _post('/api/title', {
+      'messages': messages,
+    });
+
+    return (data['title'] as String? ?? '').trim();
   }
 }

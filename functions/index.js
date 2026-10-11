@@ -26,6 +26,15 @@ const AI_BASE_URL =
   process.env.AI_BASE_URL ||
   "https://ws-gtnn1g4470a876t0.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1";
 
+// Model yang dipakai saat pesan menyertakan gambar (butuh model vision).
+// Default memakai AI_MODEL; atur AI_VISION_MODEL bila modelnya berbeda,
+// mis. qwen-vl-max / qwen2.5-vl-7b-instruct.
+const AI_VISION_MODEL = process.env.AI_VISION_MODEL || AI_MODEL;
+
+// Batas lampiran gambar yang dikirim ke AI (multimodal).
+const MAX_IMAGES = 3;
+const MAX_IMAGE_DATA_URL_LENGTH = 6 * 1024 * 1024; // sekitar 3 MB gambar
+
 const RATE_LIMIT = Number(process.env.AI_RATE_LIMIT || 30);
 const RATE_WINDOW_MS = Number(process.env.AI_RATE_WINDOW_MS || 60 * 1000);
 
@@ -90,8 +99,87 @@ function buildCorsOrigin() {
   };
 }
 
+// Susun parameter chat completion. Model vision (VL) umumnya tidak
+// mendukung mode "thinking", jadi parameter itu hanya dikirim ke model teks.
+function buildChatParams({ model, messages, stream }) {
+  const params = {
+    model,
+    messages,
+    temperature: 0.7,
+    max_completion_tokens: 1024,
+  };
+
+  if (stream) {
+    params.stream = true;
+  }
+
+  if (!/vl/i.test(model)) {
+    params.enable_thinking = AI_ENABLE_THINKING;
+  }
+
+  return params;
+}
+
+// Rapikan judul yang dihasilkan AI: buang awalan "Judul:", tanda kutip,
+// newline, dan batasi panjangnya.
+function sanitizeTitle(raw) {
+  if (typeof raw !== "string") return "";
+
+  let title = raw
+    .replace(/\r?\n/g, " ")
+    .replace(/^\s*(judul|title)\s*[:：-]\s*/i, "")
+    .trim();
+
+  title = title
+    .replace(/^["'“”‘’`]+/, "")
+    .replace(/["'“”‘’`]+$/, "")
+    .replace(/[.。!?,;:]+$/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const MAX_TITLE_LENGTH = 60;
+
+  if (title.length > MAX_TITLE_LENGTH) {
+    title = `${title.substring(0, MAX_TITLE_LENGTH).trim()}...`;
+  }
+
+  return title;
+}
+
 // Kirim respons AI secara bertahap (Server-Sent Events) agar terasa cepat.
-async function streamChatResponse(res, messages) {
+// Bila panggilan dengan model vision gagal dan `fallback` diisi, coba sekali
+// lagi memakai model teks biasa (tanpa gambar).
+async function streamChatResponse(res, { messages, model, fallback }) {
+  let stream = null;
+
+  try {
+    stream = await getAiClient().chat.completions.create(
+      buildChatParams({ model, messages, stream: true })
+    );
+  } catch (error) {
+    console.error("AI stream start error:", error.message);
+
+    if (fallback) {
+      try {
+        stream = await getAiClient().chat.completions.create(
+          buildChatParams({
+            model: AI_MODEL,
+            messages: fallback.messages,
+            stream: true,
+          })
+        );
+      } catch (fallbackError) {
+        console.error("AI stream fallback error:", fallbackError.message);
+      }
+    }
+  }
+
+  if (!stream) {
+    return res.status(502).json({
+      error: "Gagal mendapatkan respons AI. Coba lagi nanti.",
+    });
+  }
+
   res.status(200);
   res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
   res.setHeader("Cache-Control", "no-cache, no-transform");
@@ -110,24 +198,6 @@ async function streamChatResponse(res, messages) {
   const writeDone = () => {
     res.write("data: [DONE]\n\n");
   };
-
-  let stream;
-
-  try {
-    stream = await getAiClient().chat.completions.create({
-      model: AI_MODEL,
-      messages,
-      temperature: 0.7,
-      max_completion_tokens: 1024,
-      stream: true,
-      enable_thinking: AI_ENABLE_THINKING,
-    });
-  } catch (error) {
-    console.error("AI stream start error:", error.message);
-    writeEvent({ error: "Gagal mendapatkan respons AI. Coba lagi nanti." });
-    writeDone();
-    return res.end();
-  }
 
   try {
     for await (const chunk of stream) {
@@ -157,7 +227,8 @@ function createApp() {
   app.disable("x-powered-by");
   app.use(helmet());
   app.use(cors({ origin: buildCorsOrigin() }));
-  app.use(express.json({ limit: "256kb" }));
+  // Lampiran gambar dikirim sebagai data URL base64, jadi limit dinaikkan.
+  app.use(express.json({ limit: "25mb" }));
 
   // Batasi request per IP untuk kedua endpoint AI.
   const chatLimiter = rateLimit({
@@ -257,6 +328,33 @@ function createApp() {
           });
         }
 
+        const rawImages = req.body.images;
+        let images = [];
+
+        if (rawImages !== undefined && rawImages !== null) {
+          if (!Array.isArray(rawImages) || rawImages.length > MAX_IMAGES) {
+            return res.status(400).json({
+              error: `Maksimal ${MAX_IMAGES} gambar per pesan.`,
+            });
+          }
+
+          for (const image of rawImages) {
+            if (
+              typeof image !== "string" ||
+              !/^data:image\/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=]+$/.test(
+                image
+              ) ||
+              image.length > MAX_IMAGE_DATA_URL_LENGTH
+            ) {
+              return res.status(400).json({
+                error: "Format gambar tidak valid atau terlalu besar.",
+              });
+            }
+          }
+
+          images = rawImages;
+        }
+
         const messages = [
           {
             role: "system",
@@ -281,22 +379,50 @@ function createApp() {
           ...history,
           {
             role: "user",
-            content: message.trim(),
+            content: images.length
+              ? [
+                  { type: "text", text: message },
+                  ...images.map((url) => ({
+                    type: "image_url",
+                    image_url: { url },
+                  })),
+                ]
+              : message,
           },
         ];
 
+        // Bila model vision gagal, ulangi tanpa gambar (teks saja).
+        const fallback = images.length
+          ? {
+              messages: [
+                ...messages.slice(0, messages.length - 1),
+                { role: "user", content: message },
+              ],
+            }
+          : null;
+
+        const model = images.length ? AI_VISION_MODEL : AI_MODEL;
+
         // Mode streaming (SSE): jawaban dikirim bertahap.
         if (req.body?.stream === true) {
-          return streamChatResponse(res, messages);
+          return streamChatResponse(res, { messages, model, fallback });
         }
 
-        const completion = await getAiClient().chat.completions.create({
-          model: AI_MODEL,
-          messages,
-          temperature: 0.7,
-          max_completion_tokens: 1024,
-          enable_thinking: AI_ENABLE_THINKING,
-        });
+        let completion;
+
+        try {
+          completion = await getAiClient().chat.completions.create(
+            buildChatParams({ model, messages })
+          );
+        } catch (error) {
+          if (!fallback) throw error;
+
+          console.error("AI vision error:", error.message);
+
+          completion = await getAiClient().chat.completions.create(
+            buildChatParams({ model: AI_MODEL, messages: fallback.messages })
+          );
+        }
 
         const reply = completion.choices[0]?.message?.content ?? "";
 
@@ -392,6 +518,85 @@ function createApp() {
 
         return res.status(500).json({
           error: "Gagal memperbarui memori percakapan.",
+        });
+      }
+    }
+  );
+
+  // Endpoint judul sesi percakapan.
+  // Membuat judul singkat dari TOPIK utama percakapan (bukan sekadar
+  // mengulang pesan pertama pengguna).
+  app.post(
+    "/api/title",
+    chatLimiter,
+    requireFirebaseAuth,
+    async (req, res) => {
+      try {
+        const { messages = [] } = req.body || {};
+
+        if (
+          !Array.isArray(messages) ||
+          messages.length < 1 ||
+          messages.length > 12 ||
+          !messages.every(
+            (item) =>
+              item &&
+              ["user", "assistant"].includes(item.role) &&
+              typeof item.content === "string" &&
+              item.content.trim().length > 0 &&
+              item.content.length <= 4000
+          )
+        ) {
+          return res.status(400).json({
+            error: "Data judul percakapan tidak valid.",
+          });
+        }
+
+        const completion = await getAiClient().chat.completions.create({
+          ...buildChatParams({
+            model: AI_MODEL,
+            messages: [
+              {
+                role: "system",
+                content:
+                  "Kamu membuat judul singkat untuk sebuah sesi percakapan. " +
+                  "Rangkum topik atau maksud utama percakapan, bukan sekadar " +
+                  "mengulang kalimat pertama. Gunakan bahasa yang sama dengan " +
+                  "pengguna. Maksimal 6 kata. Tanpa tanda kutip, tanpa tanda " +
+                  "baca di akhir, dan tanpa awalan seperti 'Judul:'. " +
+                  "Balas hanya judulnya saja.",
+              },
+              {
+                role: "user",
+                content: messages
+                  .map(
+                    (item) =>
+                      `${item.role === "user" ? "Pengguna" : "Upatt"}: ${item.content}`
+                  )
+                  .join("\n"),
+              },
+            ],
+          }),
+          temperature: 0.3,
+          max_completion_tokens: 32,
+        });
+
+        const title = sanitizeTitle(
+          completion.choices[0]?.message?.content
+        );
+
+        if (!title) {
+          return res.status(502).json({
+            error: "Gagal membuat judul percakapan.",
+          });
+        }
+
+        return res.json({ title });
+      } catch (error) {
+        console.error("Title generation error:", error.message);
+
+        return res.status(500).json({
+          error: "Gagal membuat judul percakapan.",
         });
       }
     }

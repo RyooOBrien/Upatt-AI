@@ -29,13 +29,18 @@ percakapan otomatis.
 - **Riwayat chat** — daftar percakapan per pengguna, buka/lihat ulang, hapus.
 - **Memori percakapan** — pesan lama otomatis diringkas agar konteks tetap
   terjaga tanpa melampaui batas jumlah pesan yang dikirim ke backend.
-- **UI responsif** — sidebar riwayat pada layar lebar, drawer overlay pada
-  layar sempit.
+- **UI responsif** — sidebar riwayat di layar lebar; di layar sempit sidebar
+  tampil penuh dari sisi kiri (menutupi bilah atas) dan bisa ditutup dengan
+  menekan area di luarnya.
+- **Lampiran** — kirim dari **kamera** (kamera in-app, jalan di Android/iOS/web),
+  **galeri foto**, atau **file** (bisa beberapa sekaligus). Lampiran tampil di
+  bubble pesan, thumbnail gambar tetap tampil setelah chat dimuat ulang, dan
+  gambar dikirim ke AI agar bisa benar-benar "dibaca" (multimodal).
+  Ketuk lampiran gambar untuk membukanya layar penuh (bisa di-zoom).
 - **Device Preview** — hanya aktif saat mode debug.
 
 ### Belum tersedia (placeholder)
 - Input suara (voice)
-- Lampiran: kamera, foto, file
 
 ---
 
@@ -53,6 +58,7 @@ percakapan otomatis.
 | Render Markdown | `flutter_markdown_plus`, `url_launcher` |
 | Rumus matematika | `flutter_math_fork` (LaTeX) |
 | Syntax highlight | `re_highlight` (tema Atom One Dark) |
+| Lampiran | `camera` (kamera in-app), `image_picker` (galeri), `file_picker` (file) |
 
 ---
 
@@ -168,6 +174,29 @@ flutter run
 flutter run --dart-define=API_BASE_URL=https://<url-backend>
 ```
 
+### Testing di HP fisik
+
+`10.0.2.2` hanya berlaku untuk Android **emulator**, jadi di HP fisik alamat itu
+akan timeout. Ada dua cara:
+
+**A. Atur dari dalam aplikasi (tanpa rebuild)**
+
+1. Pastikan HP dan komputer berada di jaringan Wi-Fi yang sama.
+2. Jalankan backend (`npm start`) dan izinkan port `3000` di firewall Windows.
+3. Cari IP LAN komputer (`ipconfig`), misal `192.168.1.20`.
+4. Buka sidebar → ikon ⚙️ **Alamat server** → isi `http://192.168.1.20:3000`
+   → **Simpan**. Alamat disimpan di perangkat dan dipakai sampai diubah.
+
+**B. `adb reverse` (kabel USB)**
+
+```bash
+adb reverse tcp:3000 tcp:3000
+```
+
+Lalu set alamat server ke `http://localhost:3000` (lewat dialog yang sama).
+
+> Alternatif saat build: `flutter run --dart-define=API_BASE_URL=http://192.168.1.20:3000`
+
 ---
 
 ## Konfigurasi
@@ -191,7 +220,8 @@ flutter build apk --dart-define=API_BASE_URL=https://<url-cloud-function>
 | `DASHSCOPE_API_KEY` | ✅ | API key penyedia AI |
 | `FIREBASE_PROJECT_ID` | | ID proyek Firebase (verifikasi token) |
 | `PORT` | | Port server lokal (default `3000`) |
-| `AI_MODEL` | | Model AI (default `qwen3.8-max`) |
+| `AI_MODEL` | | Model AI teks (default `qwen3.8-max`) |
+| `AI_VISION_MODEL` | | Model vision untuk membaca gambar (default sama dengan `AI_MODEL`, contoh `qwen-vl-max`) |
 | `AI_ENABLE_THINKING` | | Aktifkan mode "thinking" model (default `false`) |
 
 ---
@@ -240,6 +270,17 @@ Request:
 { "previousSummary": "...", "messages": [{ "role": "user", "content": "..." }] }
 ```
 
+### `POST /api/title`
+
+Membuat judul singkat untuk riwayat dari topik utama percakapan
+(bukan sekadar menyalin pesan pertama pengguna).
+
+```json
+{ "messages": [{ "role": "user", "content": "..." }, { "role": "assistant", "content": "..." }] }
+```
+
+Respons: `{ "title": "Cara membuat kue bolu" }`
+
 ---
 
 ## Model Data Firestore
@@ -267,6 +308,15 @@ users/{uid}
    diringkas lewat `/api/summarize` dan disimpan di `memorySummary`.
 3. Ringkasan ini ikut dikirim sebagai konteks sehingga percakapan lama tetap
    dikenali tanpa memperbesar payload.
+
+### Cara kerja judul riwayat
+
+1. Saat sesi baru dibuat, judul awalnya `New Chat`.
+2. Setelah balasan AI pertama, aplikasi meminta `/api/title` untuk membuat
+   judul dari **topik utama** percakapan (maks. 6 kata).
+3. Sebelum hasil AI tiba, judul sementara dari pesan pertama sudah disimpan
+   sebagai cadangan, jadi riwayat tidak pernah tertinggal sebagai `New Chat`.
+4. Chat lama yang masih berjudul `New Chat` otomatis diperbarui saat dibuka.
 
 ---
 

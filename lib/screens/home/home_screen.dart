@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -14,7 +16,11 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../core/theme/app_colors.dart';
 import '../../core/theme/app_text_styles.dart';
 import '../../services/ai_service.dart';
+import '../../services/app_settings.dart';
 import '../../services/chat_repository.dart';
+import '../../services/attachment_picker_service.dart';
+import '../camera/camera_capture_screen.dart';
+import '../image/image_viewer_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -54,7 +60,8 @@ class _HomeScreenState extends State<HomeScreen>
   // STATE
   // =========================================================
 
-  final List<Map<String, String>> _messages = [];
+  final List<Map<String, dynamic>> _messages = [];
+  final List<Map<String, dynamic>> _selectedAttachments = [];
 
   String _memorySummary = '';
   int _summarizedCount = 0;
@@ -65,11 +72,14 @@ class _HomeScreenState extends State<HomeScreen>
   bool _showHistorySidebar = false;
   String _historySearchQuery = '';
 
+  // True saat sebuah sesi baru dibuat dan belum punya judul topik.
+  bool _chatTitlePending = false;
+
   // Mode pesan sementara: percakapan tidak disimpan ke riwayat.
   bool _isTemporaryChat = false;
 
   // Snapshot chat normal agar bisa dipulihkan saat keluar dari mode sementara.
-  List<Map<String, String>>? _temporaryPreviousMessages;
+  List<Map<String, dynamic>>? _temporaryPreviousMessages;
   String? _temporaryPreviousChatId;
   String _temporaryPreviousMemorySummary = '';
   int _temporaryPreviousSummarizedCount = 0;
@@ -131,8 +141,10 @@ class _HomeScreenState extends State<HomeScreen>
 
       Future<void> _sendMessage() async {
         final message = _messageController.text.trim();
+        final attachments =
+            List<Map<String, dynamic>>.from(_selectedAttachments);
 
-        if (message.isEmpty || _isTyping) return;
+        if ((message.isEmpty && attachments.isEmpty) || _isTyping) return;
 
         FocusScope.of(context).unfocus();
 
@@ -143,8 +155,10 @@ class _HomeScreenState extends State<HomeScreen>
           _messages.add({
             'sender': 'user',
             'message': message,
+            if (attachments.isNotEmpty) 'attachments': attachments,
           });
 
+          _selectedAttachments.clear();
           _messageController.clear();
           _hasText = false;
           _showAttachmentMenu = false;
@@ -168,6 +182,7 @@ class _HomeScreenState extends State<HomeScreen>
               chatId: chatId,
               role: 'user',
               content: message,
+              attachments: attachments,
             );
 
             if (!mounted || requestId != _activeRequestId) return;
@@ -199,10 +214,12 @@ class _HomeScreenState extends State<HomeScreen>
                   })
               .toList();
 
-          // Kirim pesan ke AI dengan streaming.
+          // Kirim pesan ke AI dengan streaming. Gambar dikirim sebagai
+          // data URL (base64) agar AI bisa benar-benar "melihat" lampiran.
           final reply = await _requestAiReply(
-            message: message,
+            message: _composeMessageForAi(message, attachments),
             history: historyPayload,
+            images: _buildImageDataUrls(attachments),
             requestId: requestId,
           );
 
@@ -218,16 +235,10 @@ class _HomeScreenState extends State<HomeScreen>
 
             if (!mounted || requestId != _activeRequestId) return;
 
-            // Jadikan pesan pertama sebagai judul chat.
-            if (_messages.length == 2) {
-              final title = message.length > 35
-                  ? '${message.substring(0, 35)}...'
-                  : message;
-
-              await _chatRepository.updateChatTitle(
-                chatId,
-                title,
-              );
+            // Beri judul sesi yang merangkum topik utama percakapan
+            // (bukan sekadar menyalin pesan pertama pengguna).
+            if (_chatTitlePending) {
+              await _applyChatTitle(chatId);
             }
 
             if (!mounted || requestId != _activeRequestId) return;
@@ -276,6 +287,7 @@ class _HomeScreenState extends State<HomeScreen>
     required String message,
     required List<Map<String, String>> history,
     required int requestId,
+    List<String> images = const [],
   }) async {
     final buffer = StringBuffer();
 
@@ -317,6 +329,7 @@ class _HomeScreenState extends State<HomeScreen>
         message: message,
         memorySummary: _memorySummary,
         history: history,
+        images: images,
       )) {
         if (!mounted || requestId != _activeRequestId) break;
 
@@ -330,6 +343,7 @@ class _HomeScreenState extends State<HomeScreen>
           message: message,
           memorySummary: _memorySummary,
           history: history,
+          images: images,
         );
 
         buffer.write(reply);
@@ -402,7 +416,9 @@ class _HomeScreenState extends State<HomeScreen>
       _showAttachmentMenu = false;
       _stickToBottom = true;
       _isTemporaryChat = false;
+      _chatTitlePending = false;
       _hasText = false;
+      _selectedAttachments.clear();
       _messageController.clear();
     });
   }
@@ -421,15 +437,17 @@ class _HomeScreenState extends State<HomeScreen>
         _isTemporaryChat = false;
         _messages
           ..clear()
-          ..addAll(previousMessages ?? const <Map<String, String>>[]);
+          ..addAll(previousMessages ?? const <Map<String, dynamic>>[]);
         _currentChatId = previousChatId;
         _memorySummary = previousMemorySummary;
         _summarizedCount = previousSummarizedCount;
         _isTyping = false;
+        _chatTitlePending = false;
         _hasText = false;
         _showAttachmentMenu = false;
         _showHistorySidebar = false;
         _stickToBottom = true;
+        _selectedAttachments.clear();
         _messageController.clear();
         _clearTemporarySnapshot();
       });
@@ -440,7 +458,7 @@ class _HomeScreenState extends State<HomeScreen>
 
     // Simpan chat normal sebelum beralih ke sesi sementara.
     _temporaryPreviousMessages = _messages
-        .map((message) => Map<String, String>.from(message))
+        .map((message) => Map<String, dynamic>.from(message))
         .toList();
     _temporaryPreviousChatId = _currentChatId;
     _temporaryPreviousMemorySummary = _memorySummary;
@@ -453,10 +471,12 @@ class _HomeScreenState extends State<HomeScreen>
       _memorySummary = '';
       _summarizedCount = 0;
       _isTyping = false;
+      _chatTitlePending = false;
       _hasText = false;
       _showAttachmentMenu = false;
       _showHistorySidebar = false;
       _stickToBottom = true;
+      _selectedAttachments.clear();
       _messageController.clear();
     });
 
@@ -491,6 +511,7 @@ class _HomeScreenState extends State<HomeScreen>
           .get();
 
       final memory = await _chatRepository.getChatMemory(chatId);
+      final currentTitle = await _chatRepository.getChatTitle(chatId);
 
       if (!mounted) return;
 
@@ -499,17 +520,20 @@ class _HomeScreenState extends State<HomeScreen>
       setState(() {
         _currentChatId = chatId;
         _isTemporaryChat = false;
+        _chatTitlePending = false;
         _messages
           ..clear()
           ..addAll(
             snapshot.docs.map((doc) {
               final data = doc.data();
 
-              return <String, String>{
+              return <String, dynamic>{
                 'sender': data['role'] == 'assistant'
                     ? 'upatt'
                     : 'user',
                 'message': data['content'] as String? ?? '',
+                if (data['attachments'] is List)
+                  'attachments': _restoreAttachments(data['attachments']),
               };
             }),
           );
@@ -527,9 +551,17 @@ class _HomeScreenState extends State<HomeScreen>
         _isTyping = false;
         _showAttachmentMenu = false;
         _stickToBottom = true;
+        _selectedAttachments.clear();
       });
 
       _scrollToBottom();
+
+      // Perbaiki judul lama yang masih bawaan ("New Chat") agar menjadi
+      // ringkasan topik percakapan.
+      if (_chatRepository.isDefaultTitle(currentTitle) &&
+          _messages.isNotEmpty) {
+        await _applyChatTitle(chatId);
+      }
     } catch (error) {
       debugPrint('Gagal membuka chat: $error');
 
@@ -557,6 +589,8 @@ class _HomeScreenState extends State<HomeScreen>
 
     setState(() {
       _currentChatId = chatId;
+      // Sesi baru: judul topik diisi setelah ada balasan AI.
+      _chatTitlePending = true;
     });
   }
 
@@ -614,6 +648,67 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   // =========================================================
+  // JUDUL SESI
+  // =========================================================
+
+  // Isi judul sesi dari topik utama percakapan.
+  //
+  // Judul lokal (dari pesan pertama) disimpan lebih dulu sebagai cadangan,
+  // lalu diperbarui dengan judul hasil AI yang merangkum topik sesi.
+  Future<void> _applyChatTitle(String chatId) async {
+    _chatTitlePending = false;
+
+    final conversation = _messages
+        .map((item) => <String, String>{
+              'role': item['sender'] == 'upatt' ? 'assistant' : 'user',
+              'content': (item['message'] as String? ?? '').trim(),
+            })
+        .where((item) => item['content']!.isNotEmpty)
+        .take(6)
+        .toList();
+
+    if (conversation.isEmpty) return;
+
+    final fallback = _fallbackTitle(conversation.first['content'] ?? '');
+
+    if (fallback.isNotEmpty) {
+      try {
+        await _chatRepository.updateChatTitle(chatId, fallback);
+      } catch (error) {
+        debugPrint('Upatt title fallback error: $error');
+      }
+    }
+
+    try {
+      final title = await AiService.generateTitle(messages: conversation);
+
+      if (title.isEmpty || title == fallback) return;
+
+      await _chatRepository.updateChatTitle(chatId, title);
+    } catch (error) {
+      debugPrint('Upatt title error: $error');
+    }
+  }
+
+  // Judul cadangan sederhana dari pesan pengguna bila AI tidak tersedia.
+  String _fallbackTitle(String text) {
+    var title = text
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .replaceAll(RegExp(r'[#*`_>\[\]()~]'), '')
+        .trim();
+
+    if (title.isEmpty) return '';
+
+    const maxLength = 48;
+
+    if (title.length > maxLength) {
+      title = '${title.substring(0, maxLength).trim()}...';
+    }
+
+    return title;
+  }
+
+  // =========================================================
   // toggle sidebaer
   // =========================================================  
 
@@ -628,6 +723,94 @@ class _HomeScreenState extends State<HomeScreen>
   // =========================================================  
 
   
+Future<void> _showBackendUrlDialog() async {
+  final controller = TextEditingController(text: AiService.baseUrl);
+
+  final saved = await showDialog<bool>(
+    context: context,
+    barrierColor: Colors.black54,
+    builder: (dialogContext) {
+      return AlertDialog(
+        backgroundColor: const Color(0xFF171719),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(18),
+        ),
+        title: const Text(
+          'Alamat server AI',
+          style: TextStyle(color: Colors.white, fontSize: 18),
+        ),
+        content: SizedBox(
+          width: 420,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Saat debugging di HP fisik, 10.0.2.2 tidak berlaku. '
+                'Isi alamat LAN komputer yang menjalankan backend, '
+                'misal http://192.168.1.20:3000. Kosongkan untuk '
+                'kembali ke default.',
+                style: TextStyle(
+                  color: Colors.white60,
+                  fontSize: 12.5,
+                  height: 1.4,
+                ),
+              ),
+              const SizedBox(height: 14),
+              TextField(
+                controller: controller,
+                autofocus: true,
+                keyboardType: TextInputType.url,
+                style: const TextStyle(color: Colors.white),
+                decoration: InputDecoration(
+                  hintText: 'http://192.168.1.20:3000',
+                  hintStyle: const TextStyle(color: Colors.white30),
+                  filled: true,
+                  fillColor: const Color(0xFF101012),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide.none,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text(
+              'Batal',
+              style: TextStyle(color: Colors.white70),
+            ),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('Simpan'),
+          ),
+        ],
+      );
+    },
+  );
+
+  if (saved != true) {
+    controller.dispose();
+    return;
+  }
+
+  await AppSettings.saveApiBaseUrl(controller.text);
+
+  if (!mounted) return;
+
+  ScaffoldMessenger.of(context).showSnackBar(
+    SnackBar(
+      content: Text('Server aktif: ${AiService.baseUrl}'),
+      behavior: SnackBarBehavior.floating,
+      duration: const Duration(seconds: 3),
+    ),
+  );
+}
+
 Future<void> _showChatSearchDialog() async {
   final user = FirebaseAuth.instance.currentUser;
   if (user == null) return;
@@ -772,6 +955,14 @@ Widget _buildHistorySidebar() {
                       fontSize: 20,
                       fontWeight: FontWeight.bold,
                     ),
+                  ),
+                ),
+                IconButton(
+                  tooltip: 'Alamat server',
+                  onPressed: _showBackendUrlDialog,
+                  icon: const Icon(
+                    Icons.settings_outlined,
+                    color: Colors.white70,
                   ),
                 ),
                 IconButton(
@@ -1051,30 +1242,233 @@ Widget _buildHistorySidebar() {
   // =========================================================
 
   void _toggleAttachmentMenu() {
-    FocusScope.of(context).unfocus();
+      FocusScope.of(context).unfocus();
 
-    setState(() {
-      _showAttachmentMenu = !_showAttachmentMenu;
-    });
-  }
+      setState(() {
+        _showAttachmentMenu = !_showAttachmentMenu;
+      });
+    }
 
-  void _selectAttachment(String type) {
+    Future<void> _selectAttachment(String type) async {
     setState(() {
       _showAttachmentMenu = false;
     });
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('$type feature will be added later.'),
-        behavior: SnackBarBehavior.floating,
-        backgroundColor: _surfaceLight,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(12),
+    try {
+      // Kamera memakai layar kamera in-app (paket `camera`) agar benar-benar
+      // membuka kamera di Android, iOS, dan web.
+      final picked = type == 'Camera'
+          ? await _captureWithCamera()
+          : await AttachmentPickerService.pick(type);
+
+      if (!mounted || picked.isEmpty) return;
+
+      setState(() {
+        _selectedAttachments.addAll(picked);
+      });
+    } catch (error, stackTrace) {
+      debugPrint('Attachment picker error: $error');
+      debugPrintStack(stackTrace: stackTrace);
+
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Error: $error'),
+          behavior: SnackBarBehavior.floating,
+          backgroundColor: Colors.red.shade700,
         ),
-        duration: const Duration(seconds: 2),
+      );
+    }
+  }
+
+  // Buka layar kamera in-app dan kembalikan lampirannya (bila ada).
+  Future<List<Map<String, dynamic>>> _captureWithCamera() async {
+    final captured = await Navigator.of(context).push<Map<String, dynamic>>(
+      MaterialPageRoute(
+        builder: (_) => const CameraCaptureScreen(),
+      ),
+    );
+
+    if (captured == null) return const [];
+
+    // Buat thumbnail agar lampiran tetap tampil setelah chat dimuat ulang.
+    final bytes = captured['bytes'];
+
+    if (bytes is Uint8List && bytes.isNotEmpty) {
+      captured['thumb'] = await AttachmentPickerService.encodeThumbnail(bytes);
+    }
+
+    return [captured];
+  }
+
+  
+  void _removeAttachment(int index) {
+    setState(() {
+      if (index >= 0 && index < _selectedAttachments.length) {
+        _selectedAttachments.removeAt(index);
+      }
+
+      _hasText = _messageController.text.trim().isNotEmpty;
+    });
+  }
+
+  // Beri tahu AI tentang lampiran yang disertakan pengguna.
+  String _composeMessageForAi(
+    String message,
+    List<Map<String, dynamic>> attachments,
+  ) {
+    if (attachments.isEmpty) return message;
+
+    final names = attachments
+        .map((attachment) => attachment['name'] ?? 'lampiran')
+        .join(', ');
+
+    final note = 'Lampiran dari pengguna: $names';
+
+    return message.isEmpty ? note : '$message\n\n[$note]';
+  }
+
+  // Ubah lampiran gambar menjadi data URL base64 untuk dikirim ke AI
+  // (multimodal). Maksimal 4 gambar, sesuai batas backend.
+  List<String> _buildImageDataUrls(
+    List<Map<String, dynamic>> attachments,
+  ) {
+    const maxImages = 4;
+    const maxBytes = 2 * 1024 * 1024;
+
+    final images = <String>[];
+
+    for (final attachment in attachments) {
+      if (images.length >= maxImages) break;
+
+      if (attachment['type'] != 'image') continue;
+
+      final bytes = attachment['bytes'];
+
+      if (bytes is! Uint8List || bytes.isEmpty) continue;
+
+      var payload = bytes;
+      var mime = _mimeTypeForName(attachment['name'] as String? ?? '');
+
+      // Gambar terlalu besar: pakai thumbnail (PNG) agar request ringan.
+      if (payload.length > maxBytes) {
+        final thumb = attachment['thumb'];
+
+        if (thumb is! String || thumb.isEmpty) continue;
+
+        try {
+          payload = base64Decode(thumb);
+        } catch (_) {
+          continue;
+        }
+
+        mime = 'image/png';
+      }
+
+      images.add('data:$mime;base64,${base64Encode(payload)}');
+    }
+
+    return images;
+  }
+
+  String _mimeTypeForName(String name) {
+    final extension = name.contains('.')
+        ? name.split('.').last.toLowerCase()
+        : '';
+
+    switch (extension) {
+      case 'png':
+        return 'image/png';
+      case 'gif':
+        return 'image/gif';
+      case 'webp':
+        return 'image/webp';
+      case 'bmp':
+        return 'image/bmp';
+      case 'heic':
+        return 'image/heic';
+      case 'heif':
+        return 'image/heif';
+      default:
+        return 'image/jpeg';
+    }
+  }
+
+  
+  Widget _buildSelectedAttachments() {
+    if (_selectedAttachments.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
+      child: Wrap(
+        spacing: 8,
+        runSpacing: 8,
+        children: List.generate(_selectedAttachments.length, (index) {
+          final attachment = _selectedAttachments[index];
+          final name = attachment['name'] as String? ?? 'Lampiran';
+          final isImage = attachment['type'] == 'image';
+          final bytes = attachment['bytes'];
+
+          return Container(
+            width: 180,
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: _surface,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: _border),
+            ),
+            child: Row(
+              children: [
+                if (isImage && bytes is Uint8List)
+                  GestureDetector(
+                    onTap: () => _openImageViewer(bytes, name),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(8),
+                      child: Image.memory(
+                        bytes,
+                        width: 42,
+                        height: 42,
+                        fit: BoxFit.cover,
+                      ),
+                    ),
+                  )
+                else
+                  const Icon(
+                    Icons.insert_drive_file_outlined,
+                    color: Color(0xFF9A9AA3),
+                    size: 30,
+                  ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    name,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 12,
+                    ),
+                  ),
+                ),
+                GestureDetector(
+                  onTap: () => _removeAttachment(index),
+                  child: const Icon(
+                    Icons.close_rounded,
+                    size: 18,
+                    color: Colors.white70,
+                  ),
+                ),
+              ],
+            ),
+          );
+        }),
       ),
     );
   }
+
 
   // =========================================================
   // VOICE
@@ -1139,7 +1533,12 @@ Widget _buildHistorySidebar() {
             ? user!.displayName!
             : 'User';
 
-    return Scaffold(
+    return LayoutBuilder(
+      builder: (context, rootConstraints) {
+        final isNarrow = rootConstraints.maxWidth < 600;
+        final sidebarOpen = _showHistorySidebar;
+
+        final scaffold = Scaffold(
       backgroundColor: _background,
 
       // =====================================================
@@ -1155,12 +1554,14 @@ Widget _buildHistorySidebar() {
 
       title: Row(
         children: [
-          // Tombol sidebar / riwayat chat
-          _buildHeaderButton(
-            icon: Icons.menu_rounded,
-            tooltip: 'Riwayat chat',
-            onPressed: _toggleHistorySidebar,
-          ),
+          // Tombol sidebar / riwayat chat. Disembunyikan saat sidebar terbuka
+          // di layar kecil supaya tidak menutupi panel riwayat.
+          if (!(isNarrow && sidebarOpen))
+            _buildHeaderButton(
+              icon: Icons.menu_rounded,
+              tooltip: 'Riwayat chat',
+              onPressed: _toggleHistorySidebar,
+            ),
         ],
       ),
 
@@ -1184,10 +1585,8 @@ Widget _buildHistorySidebar() {
       // =====================================================
 
       
-    body: LayoutBuilder(
-      builder: (context, constraints) {
-        final isNarrow = constraints.maxWidth < 600;
-
+    body: Builder(
+      builder: (context) {
         final chatContent = Stack(
           children: [
             Column(
@@ -1214,36 +1613,50 @@ Widget _buildHistorySidebar() {
         );
 
         if (isNarrow) {
-          return Stack(
-            children: [
-              chatContent,
-              if (_showHistorySidebar) ...[
-                Positioned.fill(
-                  child: GestureDetector(
-                    onTap: _toggleHistorySidebar,
-                    child: Container(color: Colors.black54),
-                  ),
-                ),
-                Positioned(
-                  top: 0,
-                  bottom: 0,
-                  left: 0,
-                  child: _buildHistorySidebar(),
-                ),
-              ],
-            ],
-          );
+          return chatContent;
         }
 
         return Row(
           children: [
-            if (_showHistorySidebar) _buildHistorySidebar(),
+            if (sidebarOpen) _buildHistorySidebar(),
             Expanded(child: chatContent),
           ],
         );
       },
     ),
+        );
 
+        // Di layar kecil, sidebar tampil penuh menutupi seluruh layar
+        // (termasuk AppBar) dari sisi kiri.
+        if (!isNarrow) {
+          return scaffold;
+        }
+
+        return Stack(
+          children: [
+            scaffold,
+            if (sidebarOpen) ...[
+              Positioned.fill(
+                child: GestureDetector(
+                  onTap: _toggleHistorySidebar,
+                  child: Container(color: Colors.black54),
+                ),
+              ),
+              Positioned(
+                top: 0,
+                bottom: 0,
+                left: 0,
+                // Material diperlukan karena sidebar kini berada di luar
+                // Scaffold (InkWell/ListTile butuh ancestor Material).
+                child: Material(
+                  type: MaterialType.transparency,
+                  child: _buildHistorySidebar(),
+                ),
+              ),
+            ],
+          ],
+        );
+      },
     );
   }
 
@@ -1463,7 +1876,7 @@ Widget _buildHistorySidebar() {
             message['sender'] == 'user';
 
         return _buildMessageBubble(
-          message['message'] ?? '',
+          message,
           isUser,
         );
       },
@@ -1475,9 +1888,12 @@ Widget _buildHistorySidebar() {
   // =========================================================
 
   Widget _buildMessageBubble(
-    String message,
+    Map<String, dynamic> message,
     bool isUser,
   ) {
+    final text = message['message'] as String? ?? '';
+    final attachments = _extractAttachments(message['attachments']);
+
     final maxWidth =
         MediaQuery.of(context).size.width * 0.78;
 
@@ -1493,7 +1909,7 @@ Widget _buildHistorySidebar() {
             bottom: 14,
           ),
           child: MarkdownBody(
-            data: message,
+            data: text,
             selectable: true,
             styleSheet: _markdownStyleSheet,
             builders: _markdownBuilders,
@@ -1518,10 +1934,12 @@ Widget _buildHistorySidebar() {
         margin: const EdgeInsets.only(
           bottom: 12,
         ),
-        padding: const EdgeInsets.symmetric(
-          horizontal: 16,
-          vertical: 12,
-        ),
+        padding: attachments.isEmpty
+            ? const EdgeInsets.symmetric(
+                horizontal: 16,
+                vertical: 12,
+              )
+            : const EdgeInsets.all(10),
         decoration: BoxDecoration(
           color: AppColors.primary,
           borderRadius: const BorderRadius.only(
@@ -1540,12 +1958,129 @@ Widget _buildHistorySidebar() {
             ),
           ],
         ),
-        child: Text(
-          message,
-          style: AppTextStyles.body.copyWith(
-            color: Colors.white,
-          ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (attachments.isNotEmpty)
+              _buildMessageAttachments(attachments),
+            if (text.isNotEmpty)
+              Padding(
+                padding: EdgeInsets.only(
+                  top: attachments.isNotEmpty ? 8 : 0,
+                ),
+                child: Text(
+                  text,
+                  style: AppTextStyles.body.copyWith(
+                    color: Colors.white,
+                  ),
+                ),
+              ),
+          ],
         ),
+      ),
+    );
+  }
+
+  // Ambil daftar lampiran dari sebuah pesan dengan aman.
+  List<Map<String, dynamic>> _extractAttachments(dynamic value) {
+    if (value is! List) return const [];
+
+    return value
+        .whereType<Map>()
+        .map((item) => Map<String, dynamic>.from(item))
+        .toList();
+  }
+
+  // Ubah metadata lampiran dari Firestore menjadi struktur pesan.
+  // Thumbnail base64 (bila ada) dikembalikan menjadi byte agar gambar
+  // tetap tampil setelah chat dimuat ulang.
+  List<Map<String, dynamic>> _restoreAttachments(dynamic value) {
+    return _extractAttachments(value).map((attachment) {
+      final thumb = attachment['thumb'];
+
+      if (thumb is String && thumb.isNotEmpty) {
+        try {
+          attachment['bytes'] = base64Decode(thumb);
+        } catch (_) {
+          // Abaikan thumbnail yang rusak.
+        }
+      }
+
+      return attachment;
+    }).toList();
+  }
+
+  // Menampilkan lampiran di dalam bubble pesan pengguna.
+  Widget _buildMessageAttachments(
+    List<Map<String, dynamic>> attachments,
+  ) {
+    return Wrap(
+      spacing: 6,
+      runSpacing: 6,
+      alignment: WrapAlignment.end,
+      children: attachments.map((attachment) {
+        final type = attachment['type'] as String? ?? 'file';
+        final name = attachment['name'] as String? ?? 'Lampiran';
+        final bytes = attachment['bytes'];
+
+        if (type == 'image' && bytes is Uint8List) {
+          return GestureDetector(
+            onTap: () => _openImageViewer(bytes, name),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(10),
+              child: Image.memory(
+                bytes,
+                width: 132,
+                height: 132,
+                fit: BoxFit.cover,
+              ),
+            ),
+          );
+        }
+
+        return Container(
+          constraints: const BoxConstraints(maxWidth: 200),
+          padding: const EdgeInsets.symmetric(
+            horizontal: 10,
+            vertical: 8,
+          ),
+          decoration: BoxDecoration(
+            color: Colors.black.withValues(alpha: 0.18),
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(
+                Icons.insert_drive_file_outlined,
+                size: 16,
+                color: Colors.white,
+              ),
+              const SizedBox(width: 6),
+              Flexible(
+                child: Text(
+                  name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 12,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      }).toList(),
+    );
+  }
+
+  /// Buka lampiran gambar dalam tampilan layar penuh (bisa di-zoom).
+  void _openImageViewer(Uint8List bytes, String name) {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => ImageViewerScreen(bytes: bytes, title: name),
       ),
     );
   }
@@ -1863,150 +2398,151 @@ Widget _buildHistorySidebar() {
   // MESSAGE INPUT
   // =========================================================
 
-  Widget _buildMessageInput() {
-    return Container(
-      padding: const EdgeInsets.fromLTRB(
-        12,
-        8,
-        12,
-        14,
-      ),
-      color: _background,
-      child: SafeArea(
-        top: false,
-        child: Row(
-          crossAxisAlignment:
-              CrossAxisAlignment.end,
-          children: [
-            // =================================================
-            // PLUS BUTTON
-            // =================================================
+  
 
-            IconButton(
-              onPressed: _toggleAttachmentMenu,
-              padding: const EdgeInsets.all(8),
-              constraints: const BoxConstraints(
-                minWidth: 40,
-                minHeight: 40,
-              ),
-              icon: Icon(
-                _showAttachmentMenu
-                    ? Icons.close_rounded
-                    : Icons.add_rounded,
-                color: const Color(0xFF9A9AA3),
-                size: 24,
-              ),
-            ),
+Widget _buildMessageInput() {
+  return Container(
+    padding: const EdgeInsets.fromLTRB(
+      12,
+      8,
+      12,
+      14,
+    ),
+    color: _background,
+    child: SafeArea(
+      top: false,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          // =================================================
+          // SELECTED ATTACHMENTS PREVIEW
+          // =================================================
+          _buildSelectedAttachments(),
 
-            const SizedBox(width: 2),
-
-            // =================================================
-            // TEXT FIELD
-            // =================================================
-
-            Expanded(
-              child: Container(
+          // =================================================
+          // MESSAGE INPUT
+          // =================================================
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              // PLUS BUTTON
+              IconButton(
+                onPressed: _toggleAttachmentMenu,
+                padding: const EdgeInsets.all(8),
                 constraints: const BoxConstraints(
-                  minHeight: 46,
+                  minWidth: 40,
+                  minHeight: 40,
                 ),
-                decoration: BoxDecoration(
-                  color: _surface,
-                  borderRadius:
-                      BorderRadius.circular(24),
-                  border: Border.all(
-                    color: _border,
-                  ),
-                ),
-                child: TextField(
-                  controller: _messageController,
-                  style: const TextStyle(
-                    color: Colors.white,
-                  ),
-                  cursorColor: AppColors.primary,
-                  onChanged: (value) {
-                    setState(() {
-                      _hasText =
-                          value.trim().isNotEmpty;
-                    });
-                  },
-                  onTap: () {
-                    if (_showAttachmentMenu) {
-                      setState(() {
-                        _showAttachmentMenu = false;
-                      });
-                    }
-                  },
-                  onSubmitted: (_) {
-                    if (_hasText && !_isTyping) {
-                      _sendMessage();
-                    }
-                  },
-                  textInputAction:
-                      TextInputAction.send,
-                  minLines: 1,
-                  maxLines: 5,
-                  decoration: InputDecoration(
-                    hintText: 'Message Upatt...',
-                    hintStyle:
-                        AppTextStyles.bodySecondary
-                            .copyWith(
-                      color: const Color(0xFF777780),
-                    ),
-                    border: InputBorder.none,
-                    contentPadding:
-                        const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 12,
-                    ),
-                  ),
-                ),
-              ),
-            ),
-
-            const SizedBox(width: 6),
-
-            // =================================================
-            // MIC / SEND
-            // =================================================
-
-            Container(
-              width: 46,
-              height: 46,
-              decoration: BoxDecoration(
-                color: AppColors.primary,
-                shape: BoxShape.circle,
-                boxShadow: [
-                  BoxShadow(
-                    color: AppColors.primary.withValues(
-                      alpha: 0.22,
-                    ),
-                    blurRadius: 12,
-                    spreadRadius: 1,
-                  ),
-                ],
-              ),
-              child: IconButton(
-                onPressed: _isTyping
-                    ? null
-                    : (_hasText
-                        ? _sendMessage
-                        : _startVoiceInput),
-                padding: EdgeInsets.zero,
                 icon: Icon(
-                  _hasText
-                      ? Icons.arrow_upward_rounded
-                      : Icons.mic_none_rounded,
-                  color: Colors.white,
-                  size: 21,
+                  _showAttachmentMenu
+                      ? Icons.close_rounded
+                      : Icons.add_rounded,
+                  color: const Color(0xFF9A9AA3),
+                  size: 24,
                 ),
               ),
-            ),
-          ],
-        ),
+
+              const SizedBox(width: 2),
+
+              // TEXT FIELD
+              Expanded(
+                child: Container(
+                  constraints: const BoxConstraints(
+                    minHeight: 46,
+                  ),
+                  decoration: BoxDecoration(
+                    color: _surface,
+                    borderRadius: BorderRadius.circular(24),
+                    border: Border.all(
+                      color: _border,
+                    ),
+                  ),
+                  child: TextField(
+                    controller: _messageController,
+                    style: const TextStyle(
+                      color: Colors.white,
+                    ),
+                    cursorColor: AppColors.primary,
+                    onChanged: (value) {
+                      setState(() {
+                        _hasText = value.trim().isNotEmpty;
+                      });
+                    },
+                    onTap: () {
+                      if (_showAttachmentMenu) {
+                        setState(() {
+                          _showAttachmentMenu = false;
+                        });
+                      }
+                    },
+                    onSubmitted: (_) {
+                      if (_hasText && !_isTyping) {
+                        _sendMessage();
+                      }
+                    },
+                    textInputAction: TextInputAction.send,
+                    minLines: 1,
+                    maxLines: 5,
+                    decoration: InputDecoration(
+                      hintText: 'Message Upatt...',
+                      hintStyle: AppTextStyles.bodySecondary.copyWith(
+                        color: const Color(0xFF777780),
+                      ),
+                      border: InputBorder.none,
+                      contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 12,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+
+              const SizedBox(width: 6),
+
+              // MIC / SEND
+              Container(
+                width: 46,
+                height: 46,
+                decoration: BoxDecoration(
+                  color: AppColors.primary,
+                  shape: BoxShape.circle,
+                  boxShadow: [
+                    BoxShadow(
+                      color: AppColors.primary.withValues(
+                        alpha: 0.22,
+                      ),
+                      blurRadius: 12,
+                      spreadRadius: 1,
+                    ),
+                  ],
+                ),
+                child: IconButton(
+                  onPressed: _isTyping
+                      ? null
+                      : (_hasText
+                          ? _sendMessage
+                          : _startVoiceInput),
+                  padding: EdgeInsets.zero,
+                  icon: Icon(
+                    _hasText
+                        ? Icons.arrow_upward_rounded
+                        : Icons.mic_none_rounded,
+                    color: Colors.white,
+                    size: 21,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
       ),
-    );
-  }
+    ),
+  );
 }
+    }
+
 
 // =============================================================
 // TYPING DOT
