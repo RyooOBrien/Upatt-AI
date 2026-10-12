@@ -1,8 +1,10 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter_math_fork/flutter_math.dart';
@@ -41,6 +43,7 @@ class _HomeScreenState extends State<HomeScreen>
   final ChatRepository _chatRepository = ChatRepository();
 
   String? _currentChatId;
+  Offset _lastChatPointerPosition = Offset.zero;
 
   // =========================================================
   // BATAS & MEMORI
@@ -67,6 +70,12 @@ class _HomeScreenState extends State<HomeScreen>
   int _summarizedCount = 0;
 
   bool _hasText = false;
+
+  // Speech-to-text: hasil ucapan langsung masuk ke kolom pesan.
+  final stt.SpeechToText _speech = stt.SpeechToText();
+  bool _speechInitialized = false;
+  bool _isListening = false;
+  String _voiceBaseText = '';
   bool _showAttachmentMenu = false;
   bool _isTyping = false;
   bool _showHistorySidebar = false;
@@ -130,6 +139,9 @@ class _HomeScreenState extends State<HomeScreen>
   @override
   void dispose() {
     _scrollController.removeListener(_onScroll);
+    if (_isListening) {
+      _speech.stop();
+    }
     _messageController.dispose();
     _scrollController.dispose();
     super.dispose();
@@ -482,14 +494,6 @@ class _HomeScreenState extends State<HomeScreen>
 
     _scrollToBottom();
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text(
-          'Pesan sementara aktif. Chat ini tidak disimpan ke riwayat.',
-        ),
-        duration: Duration(seconds: 2),
-      ),
-    );
   }
 
   // =========================================================
@@ -896,7 +900,6 @@ Future<void> _showChatSearchDialog() async {
                               final title = doc.data()['title'] as String? ?? 'New Chat';
                               return ListTile(
                                 contentPadding: const EdgeInsets.symmetric(horizontal: 4),
-                                leading: const Icon(Icons.chat_bubble_outline_rounded, color: Color(0xFFAAAAB4), size: 20),
                                 title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white, fontSize: 14)),
                                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                                 onTap: () async {
@@ -920,6 +923,425 @@ Future<void> _showChatSearchDialog() async {
     },
   );
   controller.dispose();
+}
+
+Future<void> _showChatActions(String chatId, String currentTitle) async {
+  final screenSize = MediaQuery.of(context).size;
+  final position = _lastChatPointerPosition == Offset.zero
+      ? Offset(screenSize.width * 0.55, screenSize.height * 0.5)
+      : _lastChatPointerPosition;
+
+  final action = await showMenu<String>(
+    context: context,
+    color: const Color(0xFF303033),
+    elevation: 12,
+    shape: RoundedRectangleBorder(
+      borderRadius: BorderRadius.circular(22),
+    ),
+    constraints: const BoxConstraints(minWidth: 220, maxWidth: 280),
+    position: RelativeRect.fromLTRB(
+      position.dx.clamp(8.0, screenSize.width - 240),
+      position.dy.clamp(8.0, screenSize.height - 180),
+      (screenSize.width - position.dx).clamp(8.0, screenSize.width),
+      (screenSize.height - position.dy).clamp(8.0, screenSize.height),
+    ),
+    items: [
+      PopupMenuItem<String>(
+        enabled: false,
+        height: 48,
+        child: Text(
+          currentTitle,
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(
+            color: Colors.white,
+            fontWeight: FontWeight.w600,
+            fontSize: 14,
+          ),
+        ),
+      ),
+      const PopupMenuDivider(height: 1),
+      PopupMenuItem<String>(
+        value: 'rename',
+        height: 48,
+        child: const Row(
+          children: [
+            Icon(Icons.drive_file_rename_outline_rounded,
+                color: Colors.white70, size: 21),
+            SizedBox(width: 12),
+            Text('Ganti nama', style: TextStyle(color: Colors.white)),
+          ],
+        ),
+      ),
+      PopupMenuItem<String>(
+        value: 'delete',
+        height: 48,
+        child: const Row(
+          children: [
+            Icon(Icons.delete_outline_rounded,
+                color: Color(0xFFFF6B75), size: 21),
+            SizedBox(width: 12),
+            Text(
+              'Hapus',
+              style: TextStyle(
+                color: Color(0xFFFF6B75),
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        ),
+      ),
+    ],
+  );
+
+  if (!mounted || action == null) return;
+
+  if (action == 'rename') {
+    await _renameChat(chatId, currentTitle);
+  } else if (action == 'delete') {
+    await _confirmDeleteChat(chatId, currentTitle);
+  }
+}
+
+Future<void> _renameChat(String chatId, String currentTitle) async {
+  final controller = TextEditingController(text: currentTitle);
+  final newTitle = await showDialog<String>(
+    context: context,
+    builder: (dialogContext) => AlertDialog(
+      backgroundColor: const Color(0xFF202024),
+      title: const Text('Ganti nama obrolan',
+          style: TextStyle(color: Colors.white)),
+      content: TextField(
+        controller: controller,
+        autofocus: true,
+        maxLength: 80,
+        style: const TextStyle(color: Colors.white),
+        decoration: InputDecoration(
+          hintText: 'Nama obrolan',
+          hintStyle: const TextStyle(color: Colors.white54),
+          enabledBorder: const UnderlineInputBorder(
+            borderSide: BorderSide(color: Colors.white24),
+          ),
+          focusedBorder: UnderlineInputBorder(
+            borderSide: BorderSide(color: AppColors.primary),
+          ),
+        ),
+        onSubmitted: (value) => Navigator.of(dialogContext).pop(value.trim()),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(dialogContext).pop(),
+          child: const Text('Batal'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.of(dialogContext).pop(controller.text.trim()),
+          child: const Text('Simpan'),
+        ),
+      ],
+    ),
+  );
+  controller.dispose();
+
+  if (!mounted || newTitle == null) return;
+  final trimmedTitle = newTitle.trim();
+  if (trimmedTitle.isEmpty || trimmedTitle == currentTitle) return;
+
+  final user = FirebaseAuth.instance.currentUser;
+  if (user == null) return;
+
+  try {
+    await FirebaseFirestore.instance
+        .collection('users')
+        .doc(user.uid)
+        .collection('chats')
+        .doc(chatId)
+        .update({
+      'title': trimmedTitle,
+      'updatedAt': FieldValue.serverTimestamp(),
+    });
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Nama obrolan berhasil diubah.')),
+    );
+  } catch (error) {
+    debugPrint('Gagal mengganti nama chat: $error');
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Gagal mengganti nama obrolan.')),
+    );
+  }
+}
+
+Future<void> _confirmDeleteChat(String chatId, String title) async {
+  final shouldDelete = await showDialog<bool>(
+    context: context,
+    builder: (dialogContext) => AlertDialog(
+      backgroundColor: const Color(0xFF202024),
+      surfaceTintColor: Colors.transparent,
+      insetPadding: const EdgeInsets.symmetric(horizontal: 28),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(22),
+        side: const BorderSide(color: Colors.white10),
+      ),
+      titlePadding: const EdgeInsets.fromLTRB(22, 22, 22, 8),
+      contentPadding: const EdgeInsets.fromLTRB(22, 0, 22, 8),
+      actionsPadding: const EdgeInsets.fromLTRB(18, 4, 18, 16),
+      title: const Text(
+        'Hapus riwayat?',
+        style: TextStyle(
+          color: Colors.white,
+          fontSize: 19,
+          fontWeight: FontWeight.w700,
+        ),
+      ),
+      content: Text(
+        'Percakapan "$title" beserta semua pesannya akan dihapus permanen. Tindakan ini tidak bisa dibatalkan.',
+        style: const TextStyle(
+          color: Color(0xFFB9B9C2),
+          fontSize: 13,
+          height: 1.5,
+        ),
+      ),
+      actions: [
+        TextButton(
+          style: TextButton.styleFrom(
+            foregroundColor: const Color(0xFFD0D0D8),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 11),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
+          ),
+          onPressed: () => Navigator.of(dialogContext).pop(false),
+          child: const Text('Batal'),
+        ),
+        FilledButton(
+          style: FilledButton.styleFrom(
+            backgroundColor: const Color(0xFFE5485D),
+            foregroundColor: Colors.white,
+            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 11),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
+          ),
+          onPressed: () => Navigator.of(dialogContext).pop(true),
+          child: const Text(
+            'Hapus',
+            style: TextStyle(fontWeight: FontWeight.w600),
+          ),
+        ),
+      ],
+    ),
+  );
+
+  if (shouldDelete != true || !mounted) return;
+
+  final user = FirebaseAuth.instance.currentUser;
+  if (user == null) return;
+
+  final chatRef = FirebaseFirestore.instance
+      .collection('users')
+      .doc(user.uid)
+      .collection('chats')
+      .doc(chatId);
+
+  try {
+    // Firestore tidak menghapus subcollection otomatis saat dokumen induk
+    // dihapus, jadi hapus pesan dalam batch sebelum menghapus sesi chat.
+    while (true) {
+      final messages = await chatRef
+          .collection('messages')
+          .limit(400)
+          .get();
+      if (messages.docs.isEmpty) break;
+
+      final batch = FirebaseFirestore.instance.batch();
+      for (final message in messages.docs) {
+        batch.delete(message.reference);
+      }
+      await batch.commit();
+    }
+
+    await chatRef.delete();
+
+    // Jika yang dihapus adalah sesi yang sedang terbuka, kosongkan tampilan
+    // agar pesan lama tidak tersimpan di layar atau terkirim ke sesi baru.
+    if (_currentChatId == chatId) {
+      _activeRequestId++;
+      setState(() {
+        _messages.clear();
+        _currentChatId = null;
+        _memorySummary = '';
+        _summarizedCount = 0;
+        _isTyping = false;
+        _chatTitlePending = false;
+        _selectedAttachments.clear();
+        _messageController.clear();
+        _hasText = false;
+        _showAttachmentMenu = false;
+        _isTemporaryChat = false;
+        _stickToBottom = true;
+        _clearTemporarySnapshot();
+      });
+    }
+
+    if (!mounted) return;
+    _showHistoryNotice(
+      'Obrolan berhasil dihapus',
+      isError: false,
+    );
+  } catch (error) {
+    debugPrint('Gagal menghapus riwayat chat: $error');
+    if (!mounted) return;
+    _showHistoryNotice(
+      'Gagal menghapus riwayat. Coba lagi.',
+      isError: true,
+    );
+  }
+}
+
+void _showHistoryNotice(String message, {required bool isError}) {
+  if (!mounted) return;
+
+  // Gunakan root Overlay agar notifikasi berada di lapisan paling atas,
+  // termasuk ketika sidebar riwayat sedang terbuka.
+  final overlay = Overlay.of(context, rootOverlay: true);
+  late final OverlayEntry entry;
+
+  entry = OverlayEntry(
+    builder: (overlayContext) => Positioned(
+      left: 16,
+      right: 16,
+      bottom: 18,
+      child: SafeArea(
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 440),
+            child: Material(
+              color: Colors.transparent,
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 13,
+                ),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF25252B),
+                  borderRadius: BorderRadius.circular(15),
+                  border: Border.all(
+                    color: isError
+                        ? const Color(0x66FF6475)
+                        : const Color(0x665BDBA8),
+                  ),
+                  boxShadow: const [
+                    BoxShadow(
+                      color: Color(0x40000000),
+                      blurRadius: 18,
+                      offset: Offset(0, 6),
+                    ),
+                  ],
+                ),
+                child: Row(
+                  children: [
+                    Icon(
+                      isError
+                          ? Icons.error_outline_rounded
+                          : Icons.check_circle_outline_rounded,
+                      color: isError
+                          ? const Color(0xFFFF6878)
+                          : const Color(0xFF62D6A5),
+                      size: 21,
+                    ),
+                    const SizedBox(width: 11),
+                    Expanded(
+                      child: Text(
+                        message,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w500,
+                          height: 1.35,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
+
+  overlay.insert(entry);
+  Future<void>.delayed(const Duration(seconds: 3), () {
+    if (entry.mounted) entry.remove();
+  });
+}
+
+Widget _buildSidebarFeatureItem({
+  required IconData icon,
+  required String title,
+  required VoidCallback onTap,
+}) {
+  return Padding(
+    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 1),
+    child: InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(10),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 11),
+        child: Row(
+          children: [
+            Icon(icon, color: const Color(0xFFE4E4E8), size: 22),
+            const SizedBox(width: 14),
+            Text(
+              title,
+              style: const TextStyle(
+                color: Color(0xFFE4E4E8),
+                fontSize: 14,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+}
+
+Future<void> _showSidebarFeatureDialog({
+  required String title,
+  required String description,
+  required IconData icon,
+}) async {
+  await showDialog<void>(
+    context: context,
+    builder: (dialogContext) => AlertDialog(
+      backgroundColor: const Color(0xFF202024),
+      surfaceTintColor: Colors.transparent,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+      title: Row(
+        children: [
+          Icon(icon, color: AppColors.primary),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(title, style: const TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+      content: Text(
+        description,
+        style: const TextStyle(color: Colors.white70, height: 1.5),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(dialogContext).pop(),
+          child: const Text('Mengerti'),
+        ),
+      ],
+    ),
+  );
 }
 
 Widget _buildHistorySidebar() {
@@ -973,53 +1395,50 @@ Widget _buildHistorySidebar() {
                     color: Colors.white,
                   ),
                 ),
-                IconButton(
-                  tooltip: 'Close sidebar',
-                  onPressed: _toggleHistorySidebar,
-                  icon: const Icon(
-                    Icons.menu_open_rounded,
-                    color: Colors.white70,
-                  ),
-                ),
               ],
             ),
           ),
 
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12),
-            child: InkWell(
-              onTap: () {
-                _newChat();
-                setState(() => _showHistorySidebar = false);
-              },
-              borderRadius: BorderRadius.circular(12),
-              child: Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 12,
-                  vertical: 12,
-                ),
-                decoration: BoxDecoration(
-                  color: AppColors.primary.withValues(alpha: 0.14),
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(
-                    color: AppColors.primary.withValues(alpha: 0.3),
-                  ),
-                ),
-                child: const Row(
-                  children: [
-                    Icon(Icons.add_rounded, color: AppColors.primary),
-                    SizedBox(width: 10),
-                    Text('New Chat', style: TextStyle(color: Colors.white)),
-                  ],
-                ),
-              ),
-            ),
+          // Menu utama sidebar. Tombol New Chat di bagian atas sengaja
+          // dihilangkan karena aksi membuat obrolan sudah tersedia di bawah.
+          const SizedBox(height: 4),
+          _buildSidebarFeatureItem(
+            icon: Icons.image_outlined,
+            title: 'Gambar',
+            onTap: () {
+              setState(() => _showHistorySidebar = false);
+              _selectAttachment('Photo');
+            },
+          ),
+          _buildSidebarFeatureItem(
+            icon: Icons.auto_stories_outlined,
+            title: 'Pustaka',
+            onTap: () {
+              setState(() => _showHistorySidebar = false);
+              _showSidebarFeatureDialog(
+                title: 'Pustaka',
+                description:
+                    'Pustaka akan menjadi tempat untuk melihat dan mengelola gambar atau file yang disimpan. Penyimpanan pustaka belum terhubung pada versi ini.',
+                icon: Icons.auto_stories_outlined,
+              );
+            },
+          ),
+          _buildSidebarFeatureItem(
+            icon: Icons.folder_outlined,
+            title: 'Proyek',
+            onTap: () {
+              setState(() => _showHistorySidebar = false);
+              _showSidebarFeatureDialog(
+                title: 'Proyek',
+                description:
+                    'Proyek akan digunakan untuk mengelompokkan percakapan berdasarkan topik. Pengelolaan proyek dan penyimpanan datanya belum terhubung pada versi ini.',
+                icon: Icons.folder_outlined,
+              );
+            },
           ),
 
-          const SizedBox(height: 8),
-
           const Padding(
-            padding: EdgeInsets.fromLTRB(16, 22, 16, 10),
+            padding: EdgeInsets.fromLTRB(16, 24, 16, 10),
             child: Text(
               'RECENT CHATS',
               style: TextStyle(
@@ -1089,6 +1508,10 @@ Widget _buildHistorySidebar() {
                       padding: const EdgeInsets.only(bottom: 4),
                       child: InkWell(
                         borderRadius: BorderRadius.circular(10),
+                        onTapDown: (details) {
+                          _lastChatPointerPosition = details.globalPosition;
+                        },
+                        onLongPress: () => _showChatActions(chat.id, title),
                         onTap: () async {
                           await _openChat(chat.id);
 
@@ -1111,12 +1534,6 @@ Widget _buildHistorySidebar() {
                           ),
                           child: Row(
                             children: [
-                              const Icon(
-                                Icons.chat_bubble_outline_rounded,
-                                size: 17,
-                                color: Color(0xFFAAAAB4),
-                              ),
-                              const SizedBox(width: 10),
                               Expanded(
                                 child: Text(
                                   title,
@@ -1471,23 +1888,105 @@ Widget _buildHistorySidebar() {
 
 
   // =========================================================
-  // VOICE
+  // VOICE: SPEECH TO TEXT
   // =========================================================
 
-  void _startVoiceInput() {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: const Text(
-          'Voice input will be added later.',
+  Future<void> _startVoiceInput() async {
+    // Ketuk mikrofon lagi untuk menghentikan perekaman.
+    if (_isListening) {
+      await _speech.stop();
+      if (!mounted) return;
+      setState(() => _isListening = false);
+      return;
+    }
+
+    try {
+      if (!_speechInitialized) {
+        final available = await _speech.initialize(
+          onStatus: (status) {
+            if (!mounted) return;
+            final listening = status == 'listening';
+            if (_isListening != listening) {
+              setState(() => _isListening = listening);
+            }
+          },
+          onError: (error) {
+            if (!mounted) return;
+            setState(() => _isListening = false);
+            ScaffoldMessenger.of(context)
+              ..hideCurrentSnackBar()
+              ..showSnackBar(
+                SnackBar(
+                  content: Text(
+                    'Voice input gagal: ${error.errorMsg}',
+                  ),
+                  behavior: SnackBarBehavior.floating,
+                  duration: const Duration(seconds: 3),
+                ),
+              );
+          },
+        );
+
+        if (!mounted) return;
+        _speechInitialized = available;
+
+        if (!available) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text(
+                'Speech recognition tidak tersedia. Periksa izin mikrofon dan dukungan perangkat.',
+              ),
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+          return;
+        }
+      }
+
+      // Pertahankan teks yang sudah diketik; ucapan akan ditambahkan setelahnya.
+      _voiceBaseText = _messageController.text.trim();
+      if (_voiceBaseText.isNotEmpty) {
+        _voiceBaseText = '$_voiceBaseText ';
+      }
+
+      setState(() {
+        _isListening = true;
+        _showAttachmentMenu = false;
+      });
+
+      await _speech.listen(
+        localeId: 'id_ID',
+        listenMode: stt.ListenMode.dictation,
+        partialResults: true,
+        cancelOnError: false,
+        listenFor: const Duration(minutes: 2),
+        pauseFor: const Duration(seconds: 4),
+        onResult: (result) {
+          if (!mounted) return;
+
+          final recognizedText = result.recognizedWords.trim();
+          final fullText = '$_voiceBaseText$recognizedText';
+
+          _messageController.value = TextEditingValue(
+            text: fullText,
+            selection: TextSelection.collapsed(offset: fullText.length),
+          );
+
+          setState(() {
+            _hasText = fullText.trim().isNotEmpty;
+          });
+        },
+      );
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _isListening = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Tidak bisa memulai voice input: $error'),
+          behavior: SnackBarBehavior.floating,
         ),
-        behavior: SnackBarBehavior.floating,
-        backgroundColor: _surfaceLight,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(12),
-        ),
-        duration: const Duration(seconds: 2),
-      ),
-    );
+      );
+    }
   }
   
     Widget _buildHeaderButton({
@@ -1894,20 +2393,15 @@ Widget _buildHistorySidebar() {
     final text = message['message'] as String? ?? '';
     final attachments = _extractAttachments(message['attachments']);
 
-    final maxWidth =
-        MediaQuery.of(context).size.width * 0.78;
+    final maxWidth = MediaQuery.of(context).size.width * 0.78;
 
     // Pesan bot: teks polos tanpa bubble, mendukung Markdown.
     if (!isUser) {
       return Align(
         alignment: Alignment.centerLeft,
         child: Container(
-          constraints: BoxConstraints(
-            maxWidth: maxWidth,
-          ),
-          margin: const EdgeInsets.only(
-            bottom: 14,
-          ),
+          constraints: BoxConstraints(maxWidth: maxWidth),
+          margin: const EdgeInsets.only(bottom: 14),
           child: MarkdownBody(
             data: text,
             selectable: true,
@@ -1924,56 +2418,79 @@ Widget _buildHistorySidebar() {
       );
     }
 
-    // Pesan user: memakai bubble.
+    // Gambar pengguna ditampilkan di luar bubble, seperti pola chat modern.
+    // Lampiran non-gambar tetap berada di dalam bubble pesan.
+    final imageAttachments = attachments
+        .where((attachment) =>
+            attachment['type'] == 'image' &&
+            attachment['bytes'] is Uint8List)
+        .toList();
+
+    final otherAttachments = attachments
+        .where((attachment) =>
+            attachment['type'] != 'image' ||
+            attachment['bytes'] is! Uint8List)
+        .toList();
+
+    final hasBubbleContent = text.isNotEmpty || otherAttachments.isNotEmpty;
+
     return Align(
       alignment: Alignment.centerRight,
       child: Container(
-        constraints: BoxConstraints(
-          maxWidth: maxWidth,
-        ),
-        margin: const EdgeInsets.only(
-          bottom: 12,
-        ),
-        padding: attachments.isEmpty
-            ? const EdgeInsets.symmetric(
-                horizontal: 16,
-                vertical: 12,
-              )
-            : const EdgeInsets.all(10),
-        decoration: BoxDecoration(
-          color: AppColors.primary,
-          borderRadius: const BorderRadius.only(
-            topLeft: Radius.circular(18),
-            topRight: Radius.circular(18),
-            bottomLeft: Radius.circular(18),
-            bottomRight: Radius.circular(4),
-          ),
-          boxShadow: [
-            BoxShadow(
-              color: AppColors.primary.withValues(
-                alpha: 0.16,
-              ),
-              blurRadius: 12,
-              offset: const Offset(0, 4),
-            ),
-          ],
-        ),
+        constraints: BoxConstraints(maxWidth: maxWidth),
+        margin: const EdgeInsets.only(bottom: 12),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.end,
           mainAxisSize: MainAxisSize.min,
           children: [
-            if (attachments.isNotEmpty)
-              _buildMessageAttachments(attachments),
-            if (text.isNotEmpty)
+            if (imageAttachments.isNotEmpty)
               Padding(
                 padding: EdgeInsets.only(
-                  top: attachments.isNotEmpty ? 8 : 0,
+                  bottom: hasBubbleContent ? 8 : 0,
                 ),
-                child: Text(
-                  text,
-                  style: AppTextStyles.body.copyWith(
-                    color: Colors.white,
+                child: _buildMessageAttachments(imageAttachments),
+              ),
+            if (hasBubbleContent)
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 12,
+                ),
+                decoration: BoxDecoration(
+                  color: AppColors.primary,
+                  borderRadius: const BorderRadius.only(
+                    topLeft: Radius.circular(18),
+                    topRight: Radius.circular(18),
+                    bottomLeft: Radius.circular(18),
+                    bottomRight: Radius.circular(4),
                   ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: AppColors.primary.withValues(alpha: 0.16),
+                      blurRadius: 12,
+                      offset: const Offset(0, 4),
+                    ),
+                  ],
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (otherAttachments.isNotEmpty)
+                      _buildMessageAttachments(otherAttachments),
+                    if (text.isNotEmpty)
+                      Padding(
+                        padding: EdgeInsets.only(
+                          top: otherAttachments.isNotEmpty ? 8 : 0,
+                        ),
+                        child: Text(
+                          text,
+                          style: AppTextStyles.body.copyWith(
+                            color: Colors.white,
+                          ),
+                        ),
+                      ),
+                  ],
                 ),
               ),
           ],
@@ -2169,11 +2686,13 @@ Widget _buildHistorySidebar() {
       ),
       tableHead: body.copyWith(fontWeight: FontWeight.w700),
       tableBody: body,
+      // Flex widths avoid a single long formula/image forcing other columns
+      // to become extremely narrow on phone-sized screens.
       tableCellsPadding: const EdgeInsets.symmetric(
-        horizontal: 10,
+        horizontal: 7,
         vertical: 6,
       ),
-      tableColumnWidth: const IntrinsicColumnWidth(),
+      tableColumnWidth: const FlexColumnWidth(1),
     );
   }
 
@@ -2198,72 +2717,89 @@ Widget _buildHistorySidebar() {
     }
   }
 
-  // Menampilkan gambar Markdown lengkap dengan placeholder & fallback.
+  // Menampilkan gambar Markdown secara responsif.
+  // Gambar dibatasi lebarnya agar tidak meluber atau berubah menjadi strip
+  // sempit ketika jawaban AI berisi tabel atau layar HP berukuran kecil.
   Widget _buildMarkdownImage(Uri uri, String? title, String? alt) {
     final label = (alt == null || alt.trim().isEmpty) ? title : alt;
 
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8),
-      child: GestureDetector(
-        onTap: () => _openLink(uri.toString()),
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(12),
-          child: Image.network(
-            uri.toString(),
-            fit: BoxFit.contain,
-            loadingBuilder: (context, child, progress) {
-              if (progress == null) return child;
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final availableWidth = constraints.maxWidth.isFinite
+            ? constraints.maxWidth
+            : MediaQuery.of(context).size.width * 0.78;
+        final imageWidth = availableWidth.clamp(1.0, 420.0).toDouble();
 
-              return Container(
-                height: 160,
-                alignment: Alignment.center,
-                decoration: BoxDecoration(
-                  color: _surface,
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: _border),
-                ),
-                child: const SizedBox(
-                  width: 22,
-                  height: 22,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                ),
-              );
-            },
-            errorBuilder: (context, error, stackTrace) {
-              return Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: _surface,
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: _border),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(
-                      Icons.broken_image_outlined,
-                      size: 18,
-                      color: Color(0xFF8F8F98),
-                    ),
-                    const SizedBox(width: 8),
-                    Flexible(
-                      child: Text(
-                        (label == null || label.trim().isEmpty)
-                            ? 'Gagal memuat gambar'
-                            : label,
-                        style: const TextStyle(
-                          color: Color(0xFF8F8F98),
-                          fontSize: 13,
-                        ),
+        return Padding(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: GestureDetector(
+              onTap: () => _openLink(uri.toString()),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: Image.network(
+                  uri.toString(),
+                  width: imageWidth,
+                  fit: BoxFit.contain,
+                  loadingBuilder: (context, child, progress) {
+                    if (progress == null) return child;
+
+                    return Container(
+                      width: imageWidth,
+                      height: 150,
+                      alignment: Alignment.center,
+                      decoration: BoxDecoration(
+                        color: _surface,
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: _border),
                       ),
-                    ),
-                  ],
+                      child: const SizedBox(
+                        width: 22,
+                        height: 22,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                    );
+                  },
+                  errorBuilder: (context, error, stackTrace) {
+                    return Container(
+                      constraints: BoxConstraints(maxWidth: imageWidth),
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: _surface,
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: _border),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(
+                            Icons.broken_image_outlined,
+                            size: 18,
+                            color: Color(0xFF8F8F98),
+                          ),
+                          const SizedBox(width: 8),
+                          Flexible(
+                            child: Text(
+                              (label == null || label.trim().isEmpty)
+                                  ? 'Gagal memuat gambar'
+                                  : label,
+                              style: const TextStyle(
+                                color: Color(0xFF8F8F98),
+                                fontSize: 13,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
                 ),
-              );
-            },
+              ),
+            ),
           ),
-        ),
-      ),
+        );
+      },
     );
   }
 
@@ -2521,14 +3057,17 @@ Widget _buildMessageInput() {
                 child: IconButton(
                   onPressed: _isTyping
                       ? null
-                      : (_hasText
-                          ? _sendMessage
-                          : _startVoiceInput),
+                      : (_isListening
+                          ? _startVoiceInput
+                          : (_hasText ? _sendMessage : _startVoiceInput)),
+                  tooltip: _isListening ? 'Berhenti merekam' : 'Voice input / kirim',
                   padding: EdgeInsets.zero,
                   icon: Icon(
-                    _hasText
-                        ? Icons.arrow_upward_rounded
-                        : Icons.mic_none_rounded,
+                    _isListening
+                        ? Icons.stop_rounded
+                        : (_hasText
+                            ? Icons.arrow_upward_rounded
+                            : Icons.mic_none_rounded),
                     color: Colors.white,
                     size: 21,
                   ),
@@ -2950,7 +3489,7 @@ class _MathView extends StatelessWidget {
       tex,
       mathStyle: block ? MathStyle.display : MathStyle.text,
       textStyle: const TextStyle(
-        fontSize: 17,
+        fontSize: 15,
         color: Color(0xFFE5E5EA),
       ),
       onErrorFallback: (error) => Text(
@@ -2965,9 +3504,29 @@ class _MathView extends StatelessWidget {
     );
 
     if (!block) {
+      // Rumus inline kadang lebih lebar daripada kolom Markdown (terutama
+      // di tabel dan layar HP). FittedBox mengecilkan rumus seperlunya agar
+      // RenderLine tidak overflow ke kanan.
       return Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 2),
-        child: equation,
+        padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 1),
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            if (!constraints.maxWidth.isFinite) {
+              return equation;
+            }
+
+            return ConstrainedBox(
+              constraints: BoxConstraints(
+                maxWidth: constraints.maxWidth,
+              ),
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                alignment: Alignment.centerLeft,
+                child: equation,
+              ),
+            );
+          },
+        ),
       );
     }
 

@@ -50,6 +50,7 @@ dependencies:
   file_picker: ^13.1.0
   camera: ^0.12.1
   shared_preferences: ^2.5.6
+  speech_to_text: ^7.5.0
 
 dev_dependencies:
   flutter_test:
