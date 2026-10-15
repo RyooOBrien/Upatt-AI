@@ -70,8 +70,9 @@ class AiService {
 
   static Future<Map<String, dynamic>> _post(
     String path,
-    Map<String, dynamic> body,
-  ) async {
+    Map<String, dynamic> body, {
+    Duration timeout = const Duration(seconds: 90),
+  }) async {
     final token = await _getIdToken();
 
     final response = await http
@@ -83,7 +84,7 @@ class AiService {
           },
           body: jsonEncode(body),
         )
-        .timeout(const Duration(seconds: 90));
+        .timeout(timeout);
 
     final data = jsonDecode(response.body);
 
@@ -105,12 +106,14 @@ class AiService {
     List<Map<String, String>> history = const [],
     String memorySummary = '',
     List<String> images = const [],
+    List<Map<String, String>> sources = const [],
   }) async {
     final data = await _post('/api/chat', {
       'message': message,
       'history': history,
       'memorySummary': memorySummary,
       if (images.isNotEmpty) 'images': images,
+      if (sources.isNotEmpty) 'sources': sources,
     });
 
     return data['reply'] as String;
@@ -123,6 +126,7 @@ class AiService {
     List<Map<String, String>> history = const [],
     String memorySummary = '',
     List<String> images = const [],
+    List<Map<String, String>> sources = const [],
   }) async* {
     final token = await _getIdToken();
     final client = http.Client();
@@ -142,6 +146,7 @@ class AiService {
           'history': history,
           'memorySummary': memorySummary,
           if (images.isNotEmpty) 'images': images,
+          if (sources.isNotEmpty) 'sources': sources,
           'stream': true,
         });
 
@@ -246,4 +251,85 @@ class AiService {
 
     return (data['title'] as String? ?? '').trim();
   }
+
+  // Membuat gambar dari prompt teks (text-to-image).
+  //
+  // Mengembalikan gambar sebagai data URL base64 (mis. "data:image/png;base64,...").
+  static Future<String> generateImage({
+    required String prompt,
+    String negativePrompt = '',
+    String? size,
+  }) async {
+    final data = await _post(
+      '/api/image',
+      {
+        'prompt': prompt,
+        if (negativePrompt.trim().isNotEmpty)
+          'negativePrompt': negativePrompt.trim(),
+        if (size != null && size.isNotEmpty) 'size': size,
+      },
+      // Pembuatan gambar butuh waktu lebih lama daripada chat biasa.
+      timeout: const Duration(seconds: 120),
+    );
+
+    final image = data['image'];
+
+    if (image is! String || image.isEmpty) {
+      throw Exception('Backend tidak mengembalikan gambar.');
+    }
+
+    return image;
+  }
+
+  // Ekstraksi teks dari file sumber proyek (mis. PDF materi).
+  // Isi file dikirim sebagai base64 (tanpa Firebase Storage); backend
+  // mengembalikan teks hasil ekstraksi untuk disimpan di Firestore.
+  static Future<SourceExtract> extractSourceText({
+    required Uint8List bytes,
+    required String name,
+    String mimeType = '',
+  }) async {
+    final data = await _post(
+      '/api/extract',
+      {
+        'name': name,
+        'dataBase64': base64Encode(bytes),
+        if (mimeType.isNotEmpty) 'mimeType': mimeType,
+      },
+      // Ekstraksi file besar bisa memakan waktu lebih lama.
+      timeout: const Duration(seconds: 120),
+    );
+
+    return SourceExtract(
+      text: data['text'] as String? ?? '',
+      truncated: data['truncated'] == true,
+      kind: data['kind'] as String? ?? '',
+      charCount: (data['charCount'] as num?)?.toInt() ?? 0,
+      pages: (data['pages'] as num?)?.toInt() ?? 0,
+    );
+  }
 }
+
+/// Hasil ekstraksi teks sebuah file sumber proyek.
+class SourceExtract {
+  const SourceExtract({
+    required this.text,
+    required this.truncated,
+    required this.kind,
+    required this.charCount,
+    required this.pages,
+  });
+
+  /// Teks yang berhasil dibaca (bisa kosong bila file tidak bisa dibaca).
+  final String text;
+
+  /// True bila teks dipotong karena melebihi batas backend.
+  final bool truncated;
+
+  /// 'pdf', 'text', atau 'binary'.
+  final String kind;
+
+  final int charCount;
+  final int pages;
+}
+

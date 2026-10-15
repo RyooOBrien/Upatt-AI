@@ -37,6 +37,19 @@ percakapan otomatis.
   bubble pesan, thumbnail gambar tetap tampil setelah chat dimuat ulang, dan
   gambar dikirim ke AI agar bisa benar-benar "dibaca" (multimodal).
   Ketuk lampiran gambar untuk membukanya layar penuh (bisa di-zoom).
+- **Pustaka** — menu **Pustaka** di sidebar menampilkan riwayat **gambar &
+  file** yang pernah dikirim ke chatbot, dikumpulkan dari seluruh percakapan.
+  Ada filter **Semua/Gambar/File** dan pencarian nama; gambar bisa dibuka
+  layar penuh dan tiap item bisa ditautkan kembali ke percakapan asalnya.
+- **Buat Gambar (text-to-image)** — menu **Buat Gambar** di sidebar membuka
+  halaman khusus: tulis prompt, pilih rasio (1:1, 16:9, 3:4, 9:16), lalu model
+  gambar (mis. `qwen-image-2.0-pro`) membuat gambar. Hasil tampil sebagai
+  galeri di halaman itu dan bisa dibuka layar penuh.
+- **Proyek** — menu **Proyek** di sidebar mengelompokkan percakapan berdasarkan
+  topik. Tiap proyek bisa menyimpan **sumber materi** (mis. PDF matkul) yang
+  isinya **dibaca AI** dan dipakai sebagai konteks jawaban, serta punya daftar
+  chat sendiri. Chat di dalam proyek **terpisah** dari riwayat chat umum (di
+  luar proyek) supaya tidak bercampur.
 - **Device Preview** — hanya aktif saat mode debug.
 
 ### Belum tersedia (placeholder)
@@ -59,6 +72,9 @@ percakapan otomatis.
 | Rumus matematika | `flutter_math_fork` (LaTeX) |
 | Syntax highlight | `re_highlight` (tema Atom One Dark) |
 | Lampiran | `camera` (kamera in-app), `image_picker` (galeri), `file_picker` (file) |
+| Penyimpanan sumber | Cloud Firestore (hanya teks hasil ekstraksi; tanpa Firebase Storage) |
+| Ekstraksi dokumen | `pdf-parse` (backend) untuk PDF + file teks |
+| Buat gambar | API native DashScope (Qwen-Image) lewat `fetch` di backend |
 
 ---
 
@@ -82,6 +98,16 @@ percakapan otomatis.
 Backend memverifikasi ID token Firebase sebelum meneruskan permintaan ke model AI.
 Aplikasi tidak pernah menyimpan API key penyedia AI.
 
+Pembuatan gambar (`/api/image`) memakai **API native DashScope** (model
+Qwen-Image) karena mode OpenAI-compatible tidak melayani pembuatan gambar.
+
+Sumber materi proyek **tidak** memakai Firebase Storage (butuh paket berbayar).
+Saat sebuah sumber ditambahkan, aplikasi mengirim isi file (base64) ke backend
+(`/api/extract`); backend mengekstrak teksnya (PDF memakai `pdf-parse`, file
+teks dibaca langsung) dan mengembalikannya. Teks itulah yang disimpan di
+Firestore dan dikirim sebagai konteks `sources` pada `/api/chat` saat pengguna
+mengobrol di dalam proyek. File aslinya tidak disimpan (hanya teksnya).
+
 ---
 
 ## Struktur Folder
@@ -96,12 +122,17 @@ Upatt-AI/
 │  │  └─ widgets/upatt_auth_background.dart
 │  ├─ screens/
 │  │  ├─ auth/                      # Login, register, forgot password, AuthGate
-│  │  └─ home/home_screen.dart      # Layar chat
+│  │  ├─ home/home_screen.dart      # Layar chat
+│  │  ├─ image/                     # Buat Gambar + penampil gambar
+│  │  ├─ library/                   # Pustaka (riwayat lampiran)
+│  │  └─ projects/                  # Proyek: daftar, detail (sumber + chat)
 │  └─ services/
 │     ├─ ai_service.dart            # HTTP client ke backend AI
-│     └─ chat_repository.dart       # CRUD chat & memori di Firestore
+│     ├─ chat_repository.dart       # CRUD chat & memori di Firestore
+│     └─ project_repository.dart    # CRUD proyek, sumber (teks), chat proyek
 ├─ functions/                       # Backend AI (Cloud Functions)
 │  ├─ index.js
+│  ├─ source_extract.js             # Ekstraksi teks sumber proyek
 │  ├─ .env.example
 │  └─ package.json
 ├─ android/ · ios/ · web/ · ...     # Platform
@@ -136,7 +167,19 @@ ulang konfigurasi:
 flutterfire configure
 ```
 
-### 2. Backend (lokal)
+### 2. Fitur Proyek (tanpa Firebase Storage)
+
+Fitur **Proyek** tidak memerlukan Firebase Storage (yang butuh paket Blaze).
+Sumber materi disimpan **hanya sebagai teks** di Cloud Firestore, yang sudah
+dipakai aplikasi ini pada kuota gratis. Jadi tidak ada langkah setup tambahan.
+
+Saat menambahkan sumber, aplikasi mengirim isi file ke backend `/api/extract`;
+backend mengembalikan teksnya, teks itu disimpan di dokumen sumber. File asli
+tidak diunggah/disimpan, tetapi teksnya bisa dilihat lewat tombol **Lihat
+teks**. Batas ukuran file sumber 10 MB dan batas teks ± 1 MB per dokumen
+(batas dokumen Firestore).
+
+### 3. Backend (lokal)
 
 ```bash
 cd functions
@@ -164,7 +207,7 @@ Jalankan server:
 npm start          # http://localhost:3000
 ```
 
-### 3. Jalankan aplikasi
+### 4. Jalankan aplikasi
 
 ```bash
 # Android Emulator (default otomatis ke http://10.0.2.2:3000)
@@ -222,6 +265,9 @@ flutter build apk --dart-define=API_BASE_URL=https://<url-cloud-function>
 | `PORT` | | Port server lokal (default `3000`) |
 | `AI_MODEL` | | Model AI teks (default `qwen3.8-max`) |
 | `AI_VISION_MODEL` | | Model vision untuk membaca gambar (default sama dengan `AI_MODEL`, contoh `qwen-vl-max`) |
+| `AI_IMAGE_MODEL` | | Model pembuat gambar (default `qwen-image-2.0-pro`; alternatif `qwen-image-2.0`, `qwen-image-3.0-pro`) |
+| `AI_IMAGE_SIZE` | | Ukuran gambar default, format `lebar*tinggi` (default `1024*1024`) |
+| `AI_IMAGE_BASE_URL` | | Override base URL API native DashScope (default diturunkan dari `AI_BASE_URL`) |
 | `AI_ENABLE_THINKING` | | Aktifkan mode "thinking" model (default `false`) |
 
 ---
@@ -256,11 +302,15 @@ Request:
   "message": "Halo",
   "history": [{ "role": "user", "content": "..." }],
   "memorySummary": "...",
+  "sources": [{ "name": "Materi A.pdf", "text": "isi materi..." }],
+  "images": ["data:image/png;base64,..."],
   "stream": true
 }
 ```
 
 - `history` maksimal 20 pesan.
+- `sources` opsional (maks. 20): teks sumber proyek sebagai konteks AI.
+- `images` opsional: gambar (data URL base64) untuk model vision.
 - `stream: true` mengaktifkan Server-Sent Events: `data: {"delta":"..."}` diakhiri `data: [DONE]`.
 - Tanpa `stream`, respons berupa `{ "reply": "..." }`.
 
@@ -283,20 +333,71 @@ Respons: `{ "title": "Cara membuat kue bolu" }`
 
 ---
 
+### `POST /api/image`
+
+Membuat gambar dari prompt teks (text-to-image). Backend memanggil API native
+DashScope dengan model `AI_IMAGE_MODEL`, lalu mengembalikan gambar sebagai data
+URL base64 (aman dari CORS di Flutter Web).
+
+```json
+{
+  "prompt": "poster healing bergaya gambar tangan, langit senja",
+  "negativePrompt": "teks blur, tangan cacat",
+  "size": "1024*1024"
+}
+```
+
+- `prompt` wajib, maksimal 2000 karakter.
+- `size` opsional, format `lebar*tinggi` (default `AI_IMAGE_SIZE`).
+- Respons: `{ "image": "data:image/png;base64,...", "prompt": "..." }`.
+
+---
+
+### `POST /api/extract`
+
+Mengekstrak teks dari file sumber proyek. Klien mengirim **isi file sebagai
+base64** (tanpa Firebase Storage). Backend membaca isinya: PDF memakai
+`pdf-parse`, file teks (txt, md, csv, json, dst.) dibaca langsung.
+
+```json
+{ "name": "Materi A.pdf", "mimeType": "application/pdf", "dataBase64": "JVBERi0xLjQK..." }
+```
+
+- `dataBase64` wajib (menerima string base64 murni maupun data URL).
+- Batas ukuran file: 10 MB; teks yang dikembalikan maksimal 100.000 karakter.
+- Respons: `{ "text": "...", "truncated": false, "pages": 12, "kind": "pdf", "charCount": 42000 }`.
+- `kind`: `pdf`, `text`, atau `binary` (file yang tidak bisa dibaca).
+
+---
+
 ## Model Data Firestore
 
 ```
 users/{uid}
-└─ chats/{chatId}
-   ├─ title             : string
+├─ chats/{chatId}
+│  ├─ title             : string
+│  ├─ projectId         : string | null   (null = chat umum)
+│  ├─ createdAt         : timestamp
+│  ├─ updatedAt         : timestamp
+│  ├─ memorySummary     : string   (ringkasan percakapan lama)
+│  ├─ summarizedCount   : number   (jumlah pesan yang sudah diringkas)
+│  ├─ memoryUpdatedAt   : timestamp
+│  └─ messages/{msgId}
+│     ├─ role           : "user" | "assistant"
+│     ├─ content        : string
+│     └─ createdAt      : timestamp
+└─ projects/{projectId}
+   ├─ name              : string
+   ├─ description       : string
    ├─ createdAt         : timestamp
    ├─ updatedAt         : timestamp
-   ├─ memorySummary     : string   (ringkasan percakapan lama)
-   ├─ summarizedCount   : number   (jumlah pesan yang sudah diringkas)
-   ├─ memoryUpdatedAt   : timestamp
-   └─ messages/{msgId}
-      ├─ role           : "user" | "assistant"
-      ├─ content        : string
+   └─ sources/{sourceId}
+      ├─ name           : string
+      ├─ type           : "pdf" | "text" | "image" | "file"
+      ├─ size           : number
+      ├─ text           : string   (teks hasil ekstraksi; file asli tidak disimpan)
+      ├─ textTruncated  : boolean
+      ├─ charCount      : number
       └─ createdAt      : timestamp
 ```
 
@@ -317,6 +418,35 @@ users/{uid}
 3. Sebelum hasil AI tiba, judul sementara dari pesan pertama sudah disimpan
    sebagai cadangan, jadi riwayat tidak pernah tertinggal sebagai `New Chat`.
 4. Chat lama yang masih berjudul `New Chat` otomatis diperbarui saat dibuka.
+
+### Cara kerja Pustaka
+
+1. Pustaka membaca metadata lampiran (`attachments`) dari pesan-pesan di
+   percakapan pengguna (mis. 50 percakapan terbaru), lalu menggabungkannya
+   menjadi satu daftar, terbaru lebih dulu.
+2. Lampiran **gambar** ditampilkan sebagai grid memakai thumbnail PNG (base64)
+   yang tersimpan di pesan — sama dengan yang dipakai saat chat dimuat ulang,
+   jadi resolusinya mengikuti thumbnail (bukan file asli).
+3. Lampiran **file** hanya menyimpan metadata (nama, ukuran, jenis), jadi bisa
+   dilihat detailnya tetapi isinya tidak dapat dibuka dari Pustaka.
+4. Menekan **Buka chat** mengembalikan ID percakapan asal sehingga aplikasi
+   langsung membuka percakapan tersebut.
+
+### Cara kerja Proyek
+
+1. Menu **Proyek** menampilkan daftar proyek. Tiap proyek punya halaman detail
+   berisi **sumber materi** dan **chat** yang termasuk di dalamnya.
+2. Menambahkan sumber: isi file dikirim (base64) ke `/api/extract`, backend
+   mengembalikan teksnya, lalu teks itu disimpan di dokumen sumber (Firestore).
+   File aslinya **tidak** diunggah/disimpan.
+3. Chat yang dibuat saat sebuah proyek aktif diberi `projectId`. Riwayat di
+   sidebar menampilkan **chat umum** saat di luar proyek, dan **chat proyek**
+   saat berada di dalam proyek, sehingga keduanya tidak bercampur.
+4. Saat mengirim pesan di dalam proyek, teks semua sumber dikirim ke
+   `/api/chat` sebagai `sources`, lalu disuntikkan ke prompt AI (dengan
+   pemotongan agar hemat token). Jika isi sumber tidak memuat jawaban, AI
+   diminta menjawab jujur lalu menjawab sebisanya.
+5. Menghapus proyek akan menghapus semua sumber dan chat di dalamnya.
 
 ---
 
@@ -342,6 +472,10 @@ users/{uid}
 | Tidak bisa akses backend dari HP fisik | Bound ke `0.0.0.0` + tambahkan IP LAN komputer ke `network_security_config.xml`, lalu set `API_BASE_URL` ke `http://<ip-lan>:3000`. |
 | `401 Token login tidak valid` | `gcloud auth application-default login` belum dilakukan (dev lokal). |
 | `403 / deploy gagal` | Firebase belum di paket Blaze, atau secret `DASHSCOPE_API_KEY` belum dibuat. |
+| Menu **Buat Gambar** gagal/error | Model gambar belum aktif di workspace, atau backend belum versi terbaru. Set `AI_IMAGE_MODEL` (mis. `qwen-image-2.0-pro`) di `functions/.env`, lalu jalankan ulang/deploy backend. |
+| Menambah sumber **Proyek** gagal | Backend belum versi terbaru (endpoint `/api/extract` kini menerima `dataBase64`), atau ukuran file melebihi 10 MB. Perbarui backend lalu coba file yang lebih kecil. |
+| Isi PDF sumber kosong | PDF hasil pindai (gambar) tidak punya lapisan teks, jadi tidak ada yang bisa dibaca. Pakai PDF yang teksnya bisa diseleksi, atau file teks biasa. |
+| Sumber gagal diekstrak (`/api/extract`) | Backend belum versi terbaru atau dependensi `pdf-parse` belum terpasang. Jalankan `npm install` di `functions`, lalu jalankan ulang/deploy backend. |
 
 ---
 

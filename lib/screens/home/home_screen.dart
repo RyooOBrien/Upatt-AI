@@ -21,8 +21,13 @@ import '../../services/ai_service.dart';
 import '../../services/app_settings.dart';
 import '../../services/chat_repository.dart';
 import '../../services/attachment_picker_service.dart';
+import '../../services/project_repository.dart';
 import '../camera/camera_capture_screen.dart';
+import '../image/image_gen_screen.dart';
 import '../image/image_viewer_screen.dart';
+import '../library/library_screen.dart';
+import '../projects/project_result.dart';
+import '../projects/projects_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -41,6 +46,16 @@ class _HomeScreenState extends State<HomeScreen>
   final _scrollController = ScrollController();
 
   final ChatRepository _chatRepository = ChatRepository();
+  final ProjectRepository _projectRepository = ProjectRepository();
+
+  // Proyek yang sedang aktif. Bila null, pengguna berada di chat umum
+  // (di luar proyek) sehingga riwayat tidak bercampur.
+  String? _activeProjectId;
+  String _activeProjectName = '';
+
+  // Teks sumber proyek aktif, dipakai sebagai konteks jawaban AI.
+  List<Map<String, String>> _projectSources = const [];
+  bool _projectSourcesLoading = false;
 
   String? _currentChatId;
   Offset _lastChatPointerPosition = Offset.zero;
@@ -232,6 +247,7 @@ class _HomeScreenState extends State<HomeScreen>
             message: _composeMessageForAi(message, attachments),
             history: historyPayload,
             images: _buildImageDataUrls(attachments),
+            sources: _projectSources,
             requestId: requestId,
           );
 
@@ -300,6 +316,7 @@ class _HomeScreenState extends State<HomeScreen>
     required List<Map<String, String>> history,
     required int requestId,
     List<String> images = const [],
+    List<Map<String, String>> sources = const [],
   }) async {
     final buffer = StringBuffer();
 
@@ -342,6 +359,7 @@ class _HomeScreenState extends State<HomeScreen>
         memorySummary: _memorySummary,
         history: history,
         images: images,
+        sources: sources,
       )) {
         if (!mounted || requestId != _activeRequestId) break;
 
@@ -356,6 +374,7 @@ class _HomeScreenState extends State<HomeScreen>
           memorySummary: _memorySummary,
           history: history,
           images: images,
+          sources: sources,
         );
 
         buffer.write(reply);
@@ -433,6 +452,81 @@ class _HomeScreenState extends State<HomeScreen>
       _selectedAttachments.clear();
       _messageController.clear();
     });
+  }
+
+  // =========================================================
+  // PROYEK
+  // =========================================================
+
+  Future<void> _openProjects() async {
+    setState(() => _showHistorySidebar = false);
+
+    final result = await Navigator.of(context).push<ProjectResult>(
+      MaterialPageRoute(builder: (_) => const ProjectsScreen()),
+    );
+
+    if (result == null || !mounted) return;
+
+    await _enterProject(result.projectId, result.projectName);
+
+    if (result.chatId != null && mounted) {
+      await _openChat(result.chatId!);
+    }
+
+    if (mounted) {
+      setState(() => _showHistorySidebar = false);
+    }
+  }
+
+  Future<void> _enterProject(String projectId, String name) async {
+    setState(() {
+      _activeProjectId = projectId;
+      _activeProjectName = name;
+      _messageController.clear();
+      _hasText = false;
+    });
+
+    _newChat();
+
+    await _loadProjectSources(projectId);
+  }
+
+  Future<void> _loadProjectSources(String projectId) async {
+    if (mounted) {
+      setState(() => _projectSourcesLoading = true);
+    }
+
+    try {
+      final sources = await _projectRepository.loadSourceTexts(projectId);
+
+      if (!mounted || _activeProjectId != projectId) return;
+
+      setState(() {
+        _projectSources = sources;
+        _projectSourcesLoading = false;
+      });
+    } catch (error) {
+      debugPrint('Gagal memuat sumber proyek: $error');
+
+      if (!mounted || _activeProjectId != projectId) return;
+
+      setState(() {
+        _projectSources = const [];
+        _projectSourcesLoading = false;
+      });
+    }
+  }
+
+  void _exitProject() {
+    setState(() {
+      _activeProjectId = null;
+      _activeProjectName = '';
+      _projectSources = const [];
+      _projectSourcesLoading = false;
+      _showHistorySidebar = false;
+    });
+
+    _newChat();
   }
 
   // Tombol header berfungsi sebagai toggle masuk/keluar dari pesan sementara.
@@ -587,7 +681,9 @@ class _HomeScreenState extends State<HomeScreen>
   Future<void> _ensureChatExists() async {
     if (_currentChatId != null) return;
 
-    final chatId = await _chatRepository.createChat();
+    final chatId = await _chatRepository.createChat(
+      projectId: _activeProjectId,
+    );
 
     if (!mounted) return;
 
@@ -889,6 +985,16 @@ Future<void> _showChatSearchDialog() async {
                           if (snapshot.hasError) return const Center(child: Text('Gagal memuat riwayat.', style: TextStyle(color: Colors.white70)));
                           if (snapshot.connectionState == ConnectionState.waiting) return const Center(child: CircularProgressIndicator());
                           final docs = (snapshot.data?.docs ?? []).where((doc) {
+                            final projectId = doc.data()['projectId'] as String?;
+                            final inProject =
+                                projectId != null && projectId.isNotEmpty;
+
+                            if (_activeProjectId == null) {
+                              if (inProject) return false;
+                            } else if (projectId != _activeProjectId) {
+                              return false;
+                            }
+
                             final title = (doc.data()['title'] as String? ?? 'New Chat').toLowerCase();
                             return query.isEmpty || title.contains(query);
                           }).toList();
@@ -1310,40 +1416,6 @@ Widget _buildSidebarFeatureItem({
   );
 }
 
-Future<void> _showSidebarFeatureDialog({
-  required String title,
-  required String description,
-  required IconData icon,
-}) async {
-  await showDialog<void>(
-    context: context,
-    builder: (dialogContext) => AlertDialog(
-      backgroundColor: const Color(0xFF202024),
-      surfaceTintColor: Colors.transparent,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
-      title: Row(
-        children: [
-          Icon(icon, color: AppColors.primary),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Text(title, style: const TextStyle(color: Colors.white)),
-          ),
-        ],
-      ),
-      content: Text(
-        description,
-        style: const TextStyle(color: Colors.white70, height: 1.5),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(dialogContext).pop(),
-          child: const Text('Mengerti'),
-        ),
-      ],
-    ),
-  );
-}
-
 Widget _buildHistorySidebar() {
   final user = FirebaseAuth.instance.currentUser;
 
@@ -1404,49 +1476,75 @@ Widget _buildHistorySidebar() {
           const SizedBox(height: 4),
           _buildSidebarFeatureItem(
             icon: Icons.image_outlined,
-            title: 'Gambar',
+            title: 'Buat Gambar',
             onTap: () {
               setState(() => _showHistorySidebar = false);
-              _selectAttachment('Photo');
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => const ImageGenScreen(),
+                ),
+              );
             },
           ),
           _buildSidebarFeatureItem(
             icon: Icons.auto_stories_outlined,
             title: 'Pustaka',
-            onTap: () {
+            onTap: () async {
               setState(() => _showHistorySidebar = false);
-              _showSidebarFeatureDialog(
-                title: 'Pustaka',
-                description:
-                    'Pustaka akan menjadi tempat untuk melihat dan mengelola gambar atau file yang disimpan. Penyimpanan pustaka belum terhubung pada versi ini.',
-                icon: Icons.auto_stories_outlined,
+
+              // Pustaka bisa mengembalikan ID percakapan bila pengguna
+              // memilih "Buka chat" pada sebuah lampiran.
+              final chatId = await Navigator.of(context).push<String>(
+                MaterialPageRoute(
+                  builder: (_) => const LibraryScreen(),
+                ),
               );
+
+              if (chatId != null && mounted) {
+                await _openChat(chatId);
+              }
             },
           ),
           _buildSidebarFeatureItem(
             icon: Icons.folder_outlined,
             title: 'Proyek',
-            onTap: () {
-              setState(() => _showHistorySidebar = false);
-              _showSidebarFeatureDialog(
-                title: 'Proyek',
-                description:
-                    'Proyek akan digunakan untuk mengelompokkan percakapan berdasarkan topik. Pengelolaan proyek dan penyimpanan datanya belum terhubung pada versi ini.',
-                icon: Icons.folder_outlined,
-              );
-            },
+            onTap: _openProjects,
           ),
 
-          const Padding(
-            padding: EdgeInsets.fromLTRB(16, 24, 16, 10),
-            child: Text(
-              'RECENT CHATS',
-              style: TextStyle(
-                color: Color(0xFF85858F),
-                fontSize: 11,
-                fontWeight: FontWeight.w600,
-                letterSpacing: 1,
-              ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 24, 8, 10),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    _activeProjectId == null
+                        ? 'RECENT CHATS'
+                        : 'PROYEK: ${_activeProjectName.toUpperCase()}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: Color(0xFF85858F),
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                      letterSpacing: 1,
+                    ),
+                  ),
+                ),
+                if (_activeProjectId != null)
+                  TextButton(
+                    onPressed: _exitProject,
+                    style: TextButton.styleFrom(
+                      foregroundColor: AppColors.primary,
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                      minimumSize: const Size(0, 28),
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
+                    child: const Text(
+                      'Keluar',
+                      style: TextStyle(fontSize: 11),
+                    ),
+                  ),
+              ],
             ),
           ),
 
@@ -1474,9 +1572,23 @@ Widget _buildHistorySidebar() {
 
                 final allChats = snapshot.data?.docs ?? [];
                 final chats = allChats.where((chat) {
+                  final projectId = chat.data()['projectId'] as String?;
+                  final inProject =
+                      projectId != null && projectId.isNotEmpty;
+
+                  // Pisahkan chat umum dengan chat di dalam proyek agar
+                  // riwayat tidak bercampur.
+                  if (_activeProjectId == null) {
+                    if (inProject) return false;
+                  } else if (projectId != _activeProjectId) {
+                    return false;
+                  }
+
                   if (_historySearchQuery.isEmpty) return true;
+
                   final title = (chat.data()['title'] as String? ?? 'New Chat')
                       .toLowerCase();
+
                   return title.contains(_historySearchQuery);
                 }).toList();
 
@@ -1485,7 +1597,9 @@ Widget _buildHistorySidebar() {
                     padding: const EdgeInsets.all(16),
                     child: Text(
                       _historySearchQuery.isEmpty
-                          ? 'Belum ada percakapan.'
+                          ? (_activeProjectId == null
+                              ? 'Belum ada percakapan.'
+                              : 'Belum ada chat di proyek ini.')
                           : 'Tidak ada chat yang cocok.',
                       style: const TextStyle(
                         color: Colors.white54,
@@ -2023,6 +2137,61 @@ Widget _buildHistorySidebar() {
   // BUILD
   // =========================================================
 
+  // Bar tipis di atas area chat saat berada di dalam sebuah proyek.
+  Widget _buildProjectBanner() {
+    final count = _projectSources.length;
+
+    return Container(
+      width: double.infinity,
+      color: const Color(0xFF1A1626),
+      padding: const EdgeInsets.fromLTRB(16, 8, 4, 8),
+      child: Row(
+        children: [
+          const Icon(Icons.folder_rounded, color: AppColors.primary, size: 18),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              _activeProjectName,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+          if (_projectSourcesLoading)
+            const SizedBox(
+              width: 14,
+              height: 14,
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                color: AppColors.textSecondary,
+              ),
+            )
+          else
+            Text(
+              count == 0 ? 'Tanpa sumber' : '$count sumber',
+              style: const TextStyle(
+                color: AppColors.textSecondary,
+                fontSize: 11,
+              ),
+            ),
+          IconButton(
+            tooltip: 'Keluar dari proyek',
+            onPressed: _exitProject,
+            icon: const Icon(
+              Icons.close_rounded,
+              color: AppColors.textSecondary,
+              size: 18,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final user = FirebaseAuth.instance.currentUser;
@@ -2090,6 +2259,7 @@ Widget _buildHistorySidebar() {
           children: [
             Column(
               children: [
+                if (_activeProjectId != null) _buildProjectBanner(),
                 Expanded(
                   child: _messages.isEmpty
                       ? (_isTemporaryChat

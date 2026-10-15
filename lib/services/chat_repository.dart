@@ -2,6 +2,43 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
+/// Satu lampiran (gambar/file) yang pernah dikirim ke chatbot.
+///
+/// Dipakai oleh halaman **Pustaka** untuk menampilkan riwayat lampiran.
+class LibraryAttachment {
+  LibraryAttachment({
+    required this.chatId,
+    required this.chatTitle,
+    required this.name,
+    required this.type,
+    required this.size,
+    this.thumb,
+    this.createdAt,
+  });
+
+  /// ID percakapan asal lampiran ini dikirim.
+  final String chatId;
+
+  /// Judul percakapan asal (agar pengguna tahu konteksnya).
+  final String chatTitle;
+
+  final String name;
+
+  /// 'image' atau 'file'.
+  final String type;
+
+  /// Ukuran asli file dalam byte (0 bila tidak diketahui).
+  final int size;
+
+  /// Thumbnail PNG (base64) untuk lampiran gambar, bila tersedia.
+  final String? thumb;
+
+  /// Waktu lampiran dikirim.
+  final DateTime? createdAt;
+
+  bool get isImage => type == 'image';
+}
+
 class ChatRepository {
   final FirebaseFirestore _db = FirebaseFirestore.instance;
   final FirebaseAuth _auth = FirebaseAuth.instance;
@@ -26,11 +63,12 @@ class ChatRepository {
         .collection('chats');
   }
 
-  Future<String> createChat() async {
+  Future<String> createChat({String? projectId}) async {
     final now = FieldValue.serverTimestamp();
 
     final doc = await _chats.add({
       'title': defaultTitle,
+      'projectId': projectId,
       'createdAt': now,
       'updatedAt': now,
     });
@@ -182,4 +220,72 @@ class ChatRepository {
     });
   }
 
+  /// Ambil semua lampiran (gambar/file) yang pernah dikirim pengguna di
+  /// seluruh percakapan, terbaru lebih dulu. Dipakai halaman Pustaka.
+  ///
+  /// Lampiran dibaca dari metadata pesan (`attachments`) sehingga data lama
+  /// tetap muncul. Pencarian dibatasi [maxChats] percakapan terbaru agar
+  /// tetap ringan.
+  Future<List<LibraryAttachment>> fetchLibrary({int maxChats = 50}) async {
+    final chatsSnapshot = await _chats
+        .orderBy('updatedAt', descending: true)
+        .limit(maxChats)
+        .get();
+
+    final perChat = await Future.wait(
+      chatsSnapshot.docs.map((chatDoc) async {
+        final data = chatDoc.data();
+        final title = (data['title'] as String?)?.trim();
+
+        final messages = await chatDoc.reference
+            .collection('messages')
+            .orderBy('createdAt', descending: true)
+            .get();
+
+        final items = <LibraryAttachment>[];
+
+        for (final messageDoc in messages.docs) {
+          final message = messageDoc.data();
+          final raw = message['attachments'];
+
+          if (raw is! List || raw.isEmpty) continue;
+
+          final createdAt = message['createdAt'] is Timestamp
+              ? (message['createdAt'] as Timestamp).toDate()
+              : null;
+
+          for (final entry in raw.whereType<Map>()) {
+            final map = Map<String, dynamic>.from(entry);
+            final name = (map['name'] as String?)?.trim();
+
+            items.add(
+              LibraryAttachment(
+                chatId: chatDoc.id,
+                chatTitle:
+                    (title == null || title.isEmpty) ? defaultTitle : title,
+                name: (name == null || name.isEmpty) ? 'Lampiran' : name,
+                type: map['type'] as String? ?? 'file',
+                size: (map['size'] as num?)?.toInt() ?? 0,
+                thumb: map['thumb'] as String?,
+                createdAt: createdAt,
+              ),
+            );
+          }
+        }
+
+        return items;
+      }),
+    );
+
+    final items = perChat.expand((list) => list).toList();
+
+    items.sort((a, b) {
+      final at = a.createdAt?.millisecondsSinceEpoch ?? 0;
+      final bt = b.createdAt?.millisecondsSinceEpoch ?? 0;
+
+      return bt.compareTo(at);
+    });
+
+    return items;
+  }
 }
