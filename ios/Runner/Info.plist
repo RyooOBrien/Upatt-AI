@@ -66,5 +66,11 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
+	<key>NSCameraUsageDescription</key>
+	<string>Upatt memerlukan akses kamera untuk mengambil foto sebagai lampiran.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Upatt memerlukan akses mikrofon untuk merekam video sebagai lampiran.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Upatt memerlukan akses galeri untuk memilih foto sebagai lampiran.</string>
 </dict>
 </plist>
