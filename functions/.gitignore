@@ -1,2 +1,7 @@
 node_modules/
 *.local
+
+# Secret / konfigurasi lokal
+.env
+.env.*
+!.env.example
