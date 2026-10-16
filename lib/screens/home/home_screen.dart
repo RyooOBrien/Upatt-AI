@@ -28,6 +28,113 @@ import '../image/image_viewer_screen.dart';
 import '../library/library_screen.dart';
 import '../projects/project_result.dart';
 import '../projects/projects_screen.dart';
+import '../account/account_screen.dart';
+
+enum _SidebarIconKind { image, library, project }
+
+/// Ikon outline khusus untuk tiga menu utama sidebar Upatt.
+/// Dibuat dengan CustomPainter agar bentuknya konsisten dan tidak bergantung
+/// pada ikon Material bawaan.
+class _SidebarFeatureIcon extends StatelessWidget {
+  const _SidebarFeatureIcon({required this.kind});
+
+  final _SidebarIconKind kind;
+
+  @override
+  Widget build(BuildContext context) {
+    return CustomPaint(
+      painter: _SidebarFeatureIconPainter(kind),
+      size: const Size(22, 22),
+    );
+  }
+}
+
+class _SidebarFeatureIconPainter extends CustomPainter {
+  const _SidebarFeatureIconPainter(this.kind);
+
+  final _SidebarIconKind kind;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final scale = size.width / 24;
+    canvas.save();
+    canvas.scale(scale, scale);
+
+    final paint = Paint()
+      ..color = const Color(0xFFE4E4E8)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.65
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round;
+
+    final path = Path();
+
+    switch (kind) {
+      case _SidebarIconKind.image:
+        // Ikon foto minimalis: bingkai, titik matahari, dan bukit.
+        path.addRRect(RRect.fromRectAndRadius(
+          const Rect.fromLTWH(3.0, 3.0, 18.0, 18.0),
+          const Radius.circular(3.0),
+        ));
+        path.moveTo(4.0, 17.0);
+        path.lineTo(9.0, 11.0);
+        path.lineTo(12.0, 14.0);
+        path.lineTo(15.0, 10.0);
+        path.lineTo(20.0, 16.0);
+        canvas.drawPath(path, paint);
+        canvas.drawCircle(const Offset(8.5, 8.5), 1.5, paint);
+        break;
+
+      case _SidebarIconKind.library:
+        // Buku terbuka, dua halaman dengan garis isi minimalis.
+        path.moveTo(12, 5.0);
+        path.cubicTo(9.0, 3.1, 5.1, 3.2, 2.4, 4.6);
+        path.lineTo(2.4, 18.1);
+        path.cubicTo(5.6, 16.7, 9.2, 16.8, 12, 18.7);
+        path.moveTo(12, 5.0);
+        path.cubicTo(15.0, 3.1, 18.9, 3.2, 21.6, 4.6);
+        path.lineTo(21.6, 18.1);
+        path.cubicTo(18.4, 16.7, 14.8, 16.8, 12, 18.7);
+        path.moveTo(12, 5.0);
+        path.lineTo(12, 18.7);
+        path.moveTo(4.7, 7.5);
+        path.lineTo(8.8, 8.4);
+        path.moveTo(4.7, 10.4);
+        path.lineTo(8.8, 11.3);
+        path.moveTo(15.2, 8.4);
+        path.lineTo(19.3, 7.5);
+        path.moveTo(15.2, 11.3);
+        path.lineTo(19.3, 10.4);
+        canvas.drawPath(path, paint);
+        break;
+
+      case _SidebarIconKind.project:
+        // Folder proyek dengan bibir folder yang jelas.
+        path.moveTo(2.2, 7.0);
+        path.lineTo(2.2, 5.4);
+        path.quadraticBezierTo(2.2, 4.1, 3.6, 4.1);
+        path.lineTo(8.3, 4.1);
+        path.lineTo(10.4, 6.4);
+        path.lineTo(18.8, 6.4);
+        path.quadraticBezierTo(21.0, 6.4, 21.0, 8.4);
+        path.lineTo(21.0, 17.0);
+        path.quadraticBezierTo(21.0, 19.0, 19.0, 19.0);
+        path.lineTo(4.1, 19.0);
+        path.quadraticBezierTo(2.2, 19.0, 2.2, 17.0);
+        path.lineTo(2.2, 7.0);
+        path.moveTo(2.8, 8.3);
+        path.lineTo(19.9, 8.3);
+        canvas.drawPath(path, paint);
+        break;
+    }
+
+    canvas.restore();
+  }
+
+  @override
+  bool shouldRepaint(covariant _SidebarFeatureIconPainter oldDelegate) =>
+      oldDelegate.kind != kind;
+}
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -146,9 +253,12 @@ class _HomeScreenState extends State<HomeScreen>
     if (!_scrollController.hasClients) return;
 
     final position = _scrollController.position;
+    final isNearBottom = position.maxScrollExtent - position.pixels < 80;
 
-    _stickToBottom =
-        position.maxScrollExtent - position.pixels < 80;
+    if (_stickToBottom != isNearBottom) {
+      _stickToBottom = isNearBottom;
+      if (mounted) setState(() {});
+    }
   }
 
   @override
@@ -299,7 +409,9 @@ class _HomeScreenState extends State<HomeScreen>
               _isTyping = false;
             });
 
-            _scrollToBottom();
+            // Jangan paksa pengguna kembali ke bawah jika ia sedang membaca
+            // pesan sebelumnya. Ikuti posisi scroll hanya jika masih di bawah.
+            _autoScroll();
           }
         }
       }
@@ -401,10 +513,11 @@ class _HomeScreenState extends State<HomeScreen>
   // =========================================================
 
   void _scrollToBottom() {
+    // Dipakai saat mengirim pesan atau membuka sesi; streaming selanjutnya
+    // tetap mengikuti posisi pengguna melalui _autoScroll().
+    _stickToBottom = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!_scrollController.hasClients) {
-        return;
-      }
+      if (!_scrollController.hasClients) return;
 
       _scrollController.animateTo(
         _scrollController.position.maxScrollExtent,
@@ -412,6 +525,12 @@ class _HomeScreenState extends State<HomeScreen>
         curve: Curves.easeOut,
       );
     });
+  }
+
+  void _scrollToLatest() {
+    _stickToBottom = true;
+    _scrollToBottom();
+    if (mounted) setState(() {});
   }
 
   // Auto-scroll ringan saat streaming: hanya bila pengguna ada di bawah,
@@ -1032,6 +1151,18 @@ Future<void> _showChatSearchDialog() async {
 }
 
 Future<void> _showChatActions(String chatId, String currentTitle) async {
+  final user = FirebaseAuth.instance.currentUser;
+  if (user == null) return;
+
+  final chatRef = FirebaseFirestore.instance
+      .collection('users')
+      .doc(user.uid)
+      .collection('chats')
+      .doc(chatId);
+  final chatSnapshot = await chatRef.get();
+  if (!mounted || !chatSnapshot.exists) return;
+  final isPinned = chatSnapshot.data()?['isPinned'] == true;
+
   final screenSize = MediaQuery.of(context).size;
   final position = _lastChatPointerPosition == Offset.zero
       ? Offset(screenSize.width * 0.55, screenSize.height * 0.5)
@@ -1068,6 +1199,24 @@ Future<void> _showChatActions(String chatId, String currentTitle) async {
       ),
       const PopupMenuDivider(height: 1),
       PopupMenuItem<String>(
+        value: 'toggle_pin',
+        height: 48,
+        child: Row(
+          children: [
+            Icon(
+              isPinned ? Icons.push_pin_outlined : Icons.push_pin_rounded,
+              color: isPinned ? const Color.fromARGB(255, 196, 186, 186) : Colors.white70,
+              size: 21,
+            ),
+            const SizedBox(width: 12),
+            Text(
+              isPinned ? 'Lepas sematan' : 'Sematkan',
+              style: const TextStyle(color: Colors.white),
+            ),
+          ],
+        ),
+      ),
+      PopupMenuItem<String>(
         value: 'rename',
         height: 48,
         child: const Row(
@@ -1102,7 +1251,20 @@ Future<void> _showChatActions(String chatId, String currentTitle) async {
 
   if (!mounted || action == null) return;
 
-  if (action == 'rename') {
+  if (action == 'toggle_pin') {
+    try {
+      await chatRef.set(
+        {'isPinned': !isPinned},
+        SetOptions(merge: true),
+      );
+    } catch (error) {
+      _showHistoryNotice(
+        'Gagal mengubah sematan obrolan.',
+        isError: true,
+      );
+      debugPrint('Toggle chat pin error: $error');
+    }
+  } else if (action == 'rename') {
     await _renameChat(chatId, currentTitle);
   } else if (action == 'delete') {
     await _confirmDeleteChat(chatId, currentTitle);
@@ -1386,7 +1548,7 @@ void _showHistoryNotice(String message, {required bool isError}) {
 }
 
 Widget _buildSidebarFeatureItem({
-  required IconData icon,
+  required Widget icon,
   required String title,
   required VoidCallback onTap,
 }) {
@@ -1399,14 +1561,14 @@ Widget _buildSidebarFeatureItem({
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 11),
         child: Row(
           children: [
-            Icon(icon, color: const Color(0xFFE4E4E8), size: 22),
+            SizedBox(width: 22, height: 22, child: icon),
             const SizedBox(width: 14),
             Text(
               title,
               style: const TextStyle(
                 color: Color(0xFFE4E4E8),
                 fontSize: 14,
-                fontWeight: FontWeight.w500,
+                fontWeight: FontWeight.w700,
               ),
             ),
           ],
@@ -1475,8 +1637,8 @@ Widget _buildHistorySidebar() {
           // dihilangkan karena aksi membuat obrolan sudah tersedia di bawah.
           const SizedBox(height: 4),
           _buildSidebarFeatureItem(
-            icon: Icons.image_outlined,
-            title: 'Buat Gambar',
+            icon: const _SidebarFeatureIcon(kind: _SidebarIconKind.image),
+            title: 'Gambar',
             onTap: () {
               setState(() => _showHistorySidebar = false);
               Navigator.of(context).push(
@@ -1487,7 +1649,7 @@ Widget _buildHistorySidebar() {
             },
           ),
           _buildSidebarFeatureItem(
-            icon: Icons.auto_stories_outlined,
+            icon: const _SidebarFeatureIcon(kind: _SidebarIconKind.library),
             title: 'Pustaka',
             onTap: () async {
               setState(() => _showHistorySidebar = false);
@@ -1506,44 +1668,54 @@ Widget _buildHistorySidebar() {
             },
           ),
           _buildSidebarFeatureItem(
-            icon: Icons.folder_outlined,
+            icon: const _SidebarFeatureIcon(kind: _SidebarIconKind.project),
             title: 'Proyek',
             onTap: _openProjects,
           ),
 
           Padding(
-            padding: const EdgeInsets.fromLTRB(16, 24, 8, 10),
-            child: Row(
+            padding: const EdgeInsets.fromLTRB(16, 14, 16, 12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Expanded(
-                  child: Text(
-                    _activeProjectId == null
-                        ? 'RECENT CHATS'
-                        : 'PROYEK: ${_activeProjectName.toUpperCase()}',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      color: Color(0xFF85858F),
-                      fontSize: 11,
-                      fontWeight: FontWeight.w600,
-                      letterSpacing: 1,
-                    ),
-                  ),
+                const Divider(
+                  color: Color(0xFF303036),
+                  thickness: 1,
+                  height: 1,
                 ),
-                if (_activeProjectId != null)
-                  TextButton(
-                    onPressed: _exitProject,
-                    style: TextButton.styleFrom(
-                      foregroundColor: AppColors.primary,
-                      padding: const EdgeInsets.symmetric(horizontal: 8),
-                      minimumSize: const Size(0, 28),
-                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                    ),
-                    child: const Text(
-                      'Keluar',
-                      style: TextStyle(fontSize: 11),
-                    ),
+                if (_activeProjectId != null) ...[
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          'PROYEK: ${_activeProjectName.toUpperCase()}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            color: Color(0xFF85858F),
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                            letterSpacing: 1,
+                          ),
+                        ),
+                      ),
+                      TextButton(
+                        onPressed: _exitProject,
+                        style: TextButton.styleFrom(
+                          foregroundColor: AppColors.primary,
+                          padding: const EdgeInsets.symmetric(horizontal: 8),
+                          minimumSize: const Size(0, 28),
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        ),
+                        child: const Text(
+                          'Keluar',
+                          style: TextStyle(fontSize: 11),
+                        ),
+                      ),
+                    ],
                   ),
+                ],
               ],
             ),
           ),
@@ -1590,7 +1762,22 @@ Widget _buildHistorySidebar() {
                       .toLowerCase();
 
                   return title.contains(_historySearchQuery);
-                }).toList();
+                }).toList()
+                  ..sort((a, b) {
+                    final aPinned = a.data()['isPinned'] == true;
+                    final bPinned = b.data()['isPinned'] == true;
+                    if (aPinned != bPinned) return aPinned ? -1 : 1;
+
+                    final aUpdated = a.data()['updatedAt'];
+                    final bUpdated = b.data()['updatedAt'];
+                    final aMillis = aUpdated is Timestamp
+                        ? aUpdated.millisecondsSinceEpoch
+                        : 0;
+                    final bMillis = bUpdated is Timestamp
+                        ? bUpdated.millisecondsSinceEpoch
+                        : 0;
+                    return bMillis.compareTo(aMillis);
+                  });
 
                 if (chats.isEmpty) {
                   return Padding(
@@ -1608,63 +1795,96 @@ Widget _buildHistorySidebar() {
                   );
                 }
 
-                return ListView.builder(
-                  padding: const EdgeInsets.symmetric(horizontal: 8),
-                  itemCount: chats.length,
-                  itemBuilder: (context, index) {
-                    final chat = chats[index];
-                    final data = chat.data();
-                    final title =
-                        data['title'] as String? ?? 'New Chat';
-                    final isActive = chat.id == _currentChatId;
+                final pinnedChats = chats
+                    .where((chat) => chat.data()['isPinned'] == true)
+                    .toList();
+                final recentChats = chats
+                    .where((chat) => chat.data()['isPinned'] != true)
+                    .toList();
 
-                    return Padding(
-                      padding: const EdgeInsets.only(bottom: 4),
-                      child: InkWell(
-                        borderRadius: BorderRadius.circular(10),
-                        onTapDown: (details) {
-                          _lastChatPointerPosition = details.globalPosition;
-                        },
-                        onLongPress: () => _showChatActions(chat.id, title),
-                        onTap: () async {
-                          await _openChat(chat.id);
+                Widget sectionHeading(String title) {
+                  return Padding(
+                    padding: const EdgeInsets.fromLTRB(14, 18, 12, 8),
+                    child: Text(
+                      title,
+                      style: const TextStyle(
+                        color: Color(0xFF9A9AA3),
+                        fontSize: 12,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: 0.2,
+                      ),
+                    ),
+                  );
+                }
 
-                          if (mounted) {
-                            setState(() {
-                              _showHistorySidebar = false;
-                            });
-                          }
-                        },
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 10,
-                            vertical: 12,
-                          ),
-                          decoration: BoxDecoration(
-                            color: isActive
-                                ? const Color(0xFF242428)
-                                : Colors.transparent,
-                            borderRadius: BorderRadius.circular(10),
-                          ),
-                          child: Row(
-                            children: [
-                              Expanded(
-                                child: Text(
-                                  title,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 13,
-                                  ),
-                                ),
-                              ),
-                            ],
+                Widget chatTile(
+                  QueryDocumentSnapshot<Map<String, dynamic>> chat,
+                ) {
+                  final data = chat.data();
+                  final title = data['title'] as String? ?? 'New Chat';
+                  final isActive = chat.id == _currentChatId;
+
+                  return Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(9),
+                      onTapDown: (details) {
+                        _lastChatPointerPosition = details.globalPosition;
+                      },
+                      onLongPress: () => _showChatActions(chat.id, title),
+                      onTap: () async {
+                        await _openChat(chat.id);
+                        if (mounted) {
+                          setState(() => _showHistorySidebar = false);
+                        }
+                      },
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 11,
+                        ),
+                        decoration: BoxDecoration(
+                          color: isActive
+                              ? const Color(0xFF242428)
+                              : Colors.transparent,
+                          borderRadius: BorderRadius.circular(9),
+                        ),
+                        child: Text(
+                          title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w400,
                           ),
                         ),
                       ),
-                    );
-                  },
+                    ),
+                  );
+                }
+
+                return ListView(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  children: [
+                    if (pinnedChats.isNotEmpty) ...[
+                      sectionHeading('Disematkan'),
+                      ...pinnedChats.map(chatTile),
+                    ],
+                    if (pinnedChats.isNotEmpty && recentChats.isNotEmpty)
+                      const Padding(
+                        padding: EdgeInsets.symmetric(horizontal: 14),
+                        child: Divider(
+                          color: Color(0xFF303036),
+                          thickness: 1,
+                          height: 18,
+                        ),
+                      ),
+                    // Judul "Terkini" hanya tampil jika bagian Disematkan ada.
+                    if (pinnedChats.isNotEmpty && recentChats.isNotEmpty)
+                      sectionHeading('Terkini'),
+                    if (recentChats.isNotEmpty) ...recentChats.map(chatTile),
+                  ],
                 );
               },
             ),
@@ -1701,27 +1921,15 @@ Widget _buildHistorySidebar() {
                   ),
                 ),
                 const SizedBox(width: 12),
-                PopupMenuButton<String>(
-                  tooltip: 'Akun',
-                  color: _surfaceLight,
-                  onSelected: (value) {
-                    if (value == 'logout') _logout();
-                  },
-                  itemBuilder: (context) => [
-                    PopupMenuItem<String>(
-                      value: 'logout',
-                      child: Row(
-                        children: [
-                          const Icon(Icons.logout_rounded, color: Colors.white70, size: 19),
-                          const SizedBox(width: 10),
-                          Text(
-                            'Logout',
-                            style: AppTextStyles.body.copyWith(color: Colors.white),
-                          ),
-                        ],
+                GestureDetector(
+                  onTap: () async {
+                    setState(() => _showHistorySidebar = false);
+                    await Navigator.of(context).push(
+                      MaterialPageRoute<void>(
+                        builder: (_) => const AccountScreen(),
                       ),
-                    ),
-                  ],
+                    );
+                  },
                   child: Container(
                     width: 44,
                     height: 44,
@@ -1729,7 +1937,10 @@ Widget _buildHistorySidebar() {
                     decoration: BoxDecoration(
                       shape: BoxShape.circle,
                       color: const Color(0xFF00A86B),
-                      border: Border.all(color: const Color(0xFF414148), width: 3),
+                      border: Border.all(
+                        color: const Color(0xFF414148),
+                        width: 3,
+                      ),
                     ),
                     child: Text(
                       ((user.displayName?.trim().isNotEmpty == true)
@@ -1757,16 +1968,6 @@ Widget _buildHistorySidebar() {
 }
 
 
-
-  // =========================================================
-  // LOGOUT
-  // =========================================================
-
-  Future<void> _logout() async {
-    await FirebaseAuth.instance.signOut();
-
-    // Navigasi ke LoginScreen ditangani otomatis oleh AuthGate.
-  }
 
   // =========================================================
   // ATTACHMENT MENU
@@ -2275,8 +2476,67 @@ Widget _buildHistorySidebar() {
               Positioned(
                 left: 16,
                 right: 16,
-                bottom: 82,
+                bottom: 105,
                 child: _buildAttachmentMenu(),
+              ),
+
+            // Tombol modern untuk kembali ke pesan paling baru.
+            // Posisi tengah dan jarak dari kolom input tetap dipertahankan.
+            if (!_stickToBottom && _messages.isNotEmpty)
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom: 105,
+                child: Center(
+                  child: Tooltip(
+                    message: 'Ke pesan terbaru',
+                    child: Material(
+                      color: Colors.transparent,
+                      shape: const CircleBorder(),
+                      child: InkWell(
+                        onTap: _scrollToLatest,
+                        customBorder: const CircleBorder(),
+                        child: Container(
+                          width: 46,
+                          height: 46,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            gradient: LinearGradient(
+                              begin: Alignment.topLeft,
+                              end: Alignment.bottomRight,
+                              colors: [
+                                AppColors.primary,
+                                const Color(0xFF8B5CF6),
+                              ],
+                            ),
+                            border: Border.all(
+                              color: Colors.white.withValues(alpha: 0.22),
+                              width: 1,
+                            ),
+                            boxShadow: [
+                              BoxShadow(
+                                color: AppColors.primary.withValues(alpha: 0.34),
+                                blurRadius: 18,
+                                spreadRadius: 1,
+                                offset: const Offset(0, 5),
+                              ),
+                              const BoxShadow(
+                                color: Color(0x33000000),
+                                blurRadius: 8,
+                                offset: Offset(0, 3),
+                              ),
+                            ],
+                          ),
+                          child: const Icon(
+                            Icons.keyboard_double_arrow_down_rounded,
+                            color: Colors.white,
+                            size: 23,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
               ),
           ],
         );
@@ -2392,123 +2652,46 @@ Widget _buildHistorySidebar() {
 
   Widget _buildEmptyState(String userName) {
     return Center(
-      child: SingleChildScrollView(
-        padding: const EdgeInsets.symmetric(
-          horizontal: 28,
-        ),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            // LOGO UPATT
-            Image.asset(
-              'assets/images/upatt_logo.png',
-              width: 144,
-              height: 144,
-              fit: BoxFit.contain,
-              errorBuilder: (context, error, stackTrace) => Icon(
-                Icons.auto_awesome_rounded,
-                color: AppColors.primary,
-                size: 64,
-              ),
-            ),
-
-            const SizedBox(height: 22),
-
-            // TITLE
-            Text(
-              'How can I help you?',
-              style: AppTextStyles.title.copyWith(
-                color: Colors.white,
-              ),
-              textAlign: TextAlign.center,
-            ),
-
-            const SizedBox(height: 8),
-
-            // DESCRIPTION
-            Text(
-              'Ask anything, learn something new, '
-              'or create with Upatt.',
-              style: AppTextStyles.bodySecondary.copyWith(
-                color: const Color(0xFF8F8F98),
-              ),
-              textAlign: TextAlign.center,
-            ),
-
-            const SizedBox(height: 24),
-
-            // SUGGESTIONS
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              alignment: WrapAlignment.center,
-              children: [
-                _buildSuggestion(
-                  'Explain a topic',
-                  Icons.lightbulb_outline_rounded,
+      // Geser kelompok konten sedikit ke atas agar lebih seimbang
+      // dengan area input pesan di bagian bawah.
+      child: Transform.translate(
+        offset: const Offset(0, -22),
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.symmetric(horizontal: 28),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              // LOGO UPATT
+              Image.asset(
+                'assets/images/upatt_logo.png',
+                width: 184,
+                height: 184,
+                fit: BoxFit.contain,
+                errorBuilder: (context, error, stackTrace) => Icon(
+                  Icons.auto_awesome_rounded,
+                  color: AppColors.primary,
+                  size: 76,
                 ),
-                _buildSuggestion(
-                  'Help me write',
-                  Icons.edit_outlined,
+              ),
+              const SizedBox(height: 6),
+              Text(
+                'How can I help you?',
+                style: AppTextStyles.title.copyWith(
+                  color: Colors.white,
                 ),
-                _buildSuggestion(
-                  'Help me study',
-                  Icons.school_outlined,
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Ask anything, learn something new, '
+                'or create with Upatt.',
+                style: AppTextStyles.bodySecondary.copyWith(
+                  color: const Color(0xFF8F8F98),
                 ),
-              ],
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  // =========================================================
-  // SUGGESTION BUTTON
-  // =========================================================
-
-  Widget _buildSuggestion(
-    String text,
-    IconData icon,
-  ) {
-    return InkWell(
-      onTap: () {
-        _messageController.text = text;
-
-        setState(() {
-          _hasText = true;
-        });
-      },
-      borderRadius: BorderRadius.circular(20),
-      child: Container(
-        padding: const EdgeInsets.symmetric(
-          horizontal: 14,
-          vertical: 9,
-        ),
-        decoration: BoxDecoration(
-          color: _surface,
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(
-            color: _border,
+                textAlign: TextAlign.center,
+              ),
+            ],
           ),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(
-              icon,
-              size: 15,
-              color: AppColors.primary,
-            ),
-            const SizedBox(width: 6),
-            Text(
-              text,
-              style: AppTextStyles.bodySecondary.copyWith(
-                color: const Color(0xFFB5B5BD),
-                fontSize: 12,
-              ),
-            ),
-          ],
         ),
       ),
     );
