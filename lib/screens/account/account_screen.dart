@@ -283,7 +283,7 @@ class _AccountScreenState extends State<AccountScreen> {
         foregroundColor: Colors.white,
         elevation: 0,
         title: const Text('Akun', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
-        centerTitle: false,
+        centerTitle: true,
       ),
       body: SafeArea(
         top: false,

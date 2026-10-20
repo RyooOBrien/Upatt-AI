@@ -646,7 +646,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
                 horizontal: 24,
 
-                vertical: 40,
+                vertical: 20,
 
               ),
 
@@ -656,7 +656,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
                 children: [
 
-                  const SizedBox(height: 30),
+                  const SizedBox(height: 10),
 
 
 
@@ -672,21 +672,21 @@ class _LoginScreenState extends State<LoginScreen> {
 
                     child: Image.asset(
 
-                    'assets/images/upatt_logo.png',
+                      'assets/images/upatt_logo.png',
 
-                    width: 104,
+                      width: 160,
 
-                    height: 104,
+                      height: 160,
 
-                    fit: BoxFit.contain,
+                      fit: BoxFit.contain,
+
+                    ),
 
                   ),
 
-                  ),
 
 
-
-                  const SizedBox(height: 16),
+                  const SizedBox(height: 4),
 
 
 

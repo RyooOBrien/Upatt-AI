@@ -7,6 +7,7 @@ import 'core/theme/app_theme.dart';
 import 'firebase_options.dart';
 import 'screens/auth/auth_gate.dart';
 import 'services/app_settings.dart';
+import 'splash/upatt_splash_screen.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -36,7 +37,9 @@ class AIChatbotApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       title: 'Upatt',
       theme: AppTheme.lightTheme,
-      home: const AuthGate(),
+      home: const UPattSplashScreen(
+        nextPage: AuthGate(),
+    ),
     );
   }
 }
