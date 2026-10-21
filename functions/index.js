@@ -10,8 +10,12 @@ const {
   initializeApp,
   getApps,
   applicationDefault,
+  cert,
 } = require("firebase-admin/app");
+const fs = require("fs");
+const path = require("path");
 const { getAuth } = require("firebase-admin/auth");
+const { getFirestore, FieldValue } = require("firebase-admin/firestore");
 
 const { onRequest } = require("firebase-functions/v2/https");
 const { defineSecret } = require("firebase-functions/params");
@@ -62,10 +66,64 @@ const RATE_WINDOW_MS = Number(process.env.AI_RATE_WINDOW_MS || 60 * 1000);
 // bila menginginkan penalaran panjang.
 const AI_ENABLE_THINKING = process.env.AI_ENABLE_THINKING === "true";
 
+// Cari file kunci service account di folder functions/.
+// Berguna untuk development lokal (Firestore butuh kredensial admin).
+// Urutan: env GOOGLE_APPLICATION_CREDENTIALS -> file yang cocok -> ADC.
+function resolveServiceAccountPath() {
+  const explicit = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+
+  if (explicit && fs.existsSync(explicit)) {
+    return explicit;
+  }
+
+  try {
+    const dir = __dirname;
+    const candidates = fs
+      .readdirSync(dir)
+      .filter(
+        (name) =>
+          name.endsWith(".json") &&
+          /(firebase-adminsdk|service-?account)/i.test(name)
+      );
+
+    if (candidates.length > 0) {
+      return path.join(dir, candidates[0]);
+    }
+  } catch (error) {
+    console.warn("Gagal memindai kunci service account:", error.message);
+  }
+
+  return null;
+}
+
 // Inisialisasi Firebase Admin sekali saja.
 function ensureFirebaseAdmin() {
   if (getApps().length > 0) return;
 
+  // 1) Kunci service account (dipakai saat development lokal).
+  const keyPath = resolveServiceAccountPath();
+
+  if (keyPath) {
+    try {
+      const serviceAccount = require(keyPath);
+      initializeApp({
+        credential: cert(serviceAccount),
+        projectId:
+          serviceAccount.project_id ||
+          process.env.FIREBASE_PROJECT_ID ||
+          undefined,
+      });
+      console.log("Firebase Admin memakai kunci service account:", path.basename(keyPath));
+      return;
+    } catch (error) {
+      console.warn(
+        "Kunci service account tidak bisa dibaca, memakai ADC:",
+        error.message
+      );
+    }
+  }
+
+  // 2) Fallback ke Application Default Credentials / Cloud Functions.
   if (process.env.FIREBASE_PROJECT_ID) {
     initializeApp({
       credential: applicationDefault(),
@@ -74,6 +132,153 @@ function ensureFirebaseAdmin() {
   } else {
     // Di Cloud Functions kredensial diambil otomatis.
     initializeApp();
+  }
+}
+
+const USAGE_COLLECTION = "ai_usage";
+
+let _firestore = null;
+function getDb() {
+  ensureFirebaseAdmin();
+  if (!_firestore) {
+    _firestore = getFirestore();
+  }
+  return _firestore;
+}
+
+// Ambil dokumen usage milik user. Bila Firestore tak tersedia (mis. kredensial
+// admin lokal belum diatur), kembalikan array kosong agar endpoint usage tetap
+// bisa membalas (angka 0), bukan error 500.
+async function readUsageDocs(uid) {
+  try {
+    const db = getDb();
+    const snap = await db
+      .collection(USAGE_COLLECTION)
+      .where("uid", "==", uid)
+      .get();
+    return snap.docs;
+  } catch (error) {
+    console.warn(
+      "Firestore tidak tersedia untuk usage (dikembalikan kosong):",
+      error.message
+    );
+    return [];
+  }
+}
+
+// Baca status AI; null bila Firestore tak tersedia atau belum pernah diisi.
+async function readAiStatus() {
+  try {
+    const db = getDb();
+    const doc = await db.collection("system").doc("ai_status").get();
+    return doc.exists ? doc.data() : null;
+  } catch (error) {
+    console.warn(
+      "Firestore tidak tersedia untuk status AI:",
+      error.message
+    );
+    return null;
+  }
+}
+
+// Baca pengaturan akun (kredit). Default bila tak tersedia.
+async function readAccountSettings(uid) {
+  try {
+    const db = getDb();
+    const doc = await db.collection("users").doc(uid).get();
+    const data = doc.exists ? doc.data() : {};
+    return data?.usageSettings || {};
+  } catch (error) {
+    console.warn(
+      "Firestore tidak tersedia untuk pengaturan akun:",
+      error.message
+    );
+    return {};
+  }
+}
+
+// Batas harian default; bisa diubah lewat environment variable.
+const DAILY_CHAT_LIMIT = Number(process.env.DAILY_CHAT_LIMIT || 100);
+
+// Catat satu pemakaian AI ke Firestore. Aman dipanggil meski gagal (dilog saja).
+async function logUsage({
+  uid,
+  model,
+  provider = "dashscope",
+  promptTokens,
+  completionTokens,
+  totalTokens,
+  latencyMs,
+  status = "success",
+  endpoint = "chat",
+  errorMessage,
+}) {
+  try {
+    const db = getDb();
+    await db.collection(USAGE_COLLECTION).add({
+      uid: uid || null,
+      model: model || AI_MODEL,
+      provider,
+      promptTokens: typeof promptTokens === "number" ? promptTokens : null,
+      completionTokens:
+        typeof completionTokens === "number" ? completionTokens : null,
+      totalTokens: typeof totalTokens === "number" ? totalTokens : null,
+      latencyMs: typeof latencyMs === "number" ? latencyMs : null,
+      status,
+      endpoint,
+      errorMessage: errorMessage ? String(errorMessage).slice(0, 200) : null,
+      createdAt: FieldValue.serverTimestamp(),
+    });
+  } catch (error) {
+    console.error("Failed to log usage:", error.message);
+  }
+}
+
+// Ambil angka token dari respons penyedia AI. Bila tidak tersedia -> null.
+function getTokenCounts(completion) {
+  const usage = completion?.usage || {};
+  const promptTokens =
+    typeof usage.prompt_tokens === "number"
+      ? usage.prompt_tokens
+      : typeof usage.promptTokens === "number"
+      ? usage.promptTokens
+      : null;
+  const completionTokens =
+    typeof usage.completion_tokens === "number"
+      ? usage.completion_tokens
+      : typeof usage.completionTokens === "number"
+      ? usage.completionTokens
+      : null;
+  const totalTokens =
+    typeof usage.total_tokens === "number"
+      ? usage.total_tokens
+      : typeof usage.totalTokens === "number"
+      ? usage.totalTokens
+      : promptTokens != null && completionTokens != null
+      ? promptTokens + completionTokens
+      : null;
+  return { promptTokens, completionTokens, totalTokens };
+}
+
+// Simpan status terakhir layanan AI agar bisa ditampilkan di halaman usage.
+async function updateAiStatus({ model, latencyMs, status }) {
+  try {
+    const db = getDb();
+    await db
+      .collection("system")
+      .doc("ai_status")
+      .set(
+        {
+          provider: "dashscope",
+          model: model || AI_MODEL,
+          status: status || "online",
+          latencyMs: typeof latencyMs === "number" ? latencyMs : null,
+          updatedAt: FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      );
+  } catch (error) {
+    console.error("Failed to update ai status:", error.message);
   }
 }
 
@@ -130,6 +335,8 @@ function buildChatParams({ model, messages, stream }) {
 
   if (stream) {
     params.stream = true;
+    // Minta penyedia mengirim info pemakaian token di chunk terakhir.
+    params.stream_options = { include_usage: true };
   }
 
   if (!/vl/i.test(model)) {
@@ -277,6 +484,7 @@ async function downloadImageAsDataUrl(imageUrl) {
 async function streamChatResponse(res, { messages, model, fallback }) {
 
   let stream = null;
+  let usedModel = model;
 
   try {
     stream = await getAiClient().chat.completions.create(
@@ -294,6 +502,7 @@ async function streamChatResponse(res, { messages, model, fallback }) {
             stream: true,
           })
         );
+        usedModel = AI_MODEL;
       } catch (fallbackError) {
         console.error("AI stream fallback error:", fallbackError.message);
       }
@@ -301,9 +510,11 @@ async function streamChatResponse(res, { messages, model, fallback }) {
   }
 
   if (!stream) {
-    return res.status(502).json({
-      error: "Gagal mendapatkan respons AI. Coba lagi nanti.",
-    });
+    return {
+      ok: false,
+      model: usedModel,
+      tokens: { promptTokens: null, completionTokens: null, totalTokens: null },
+    };
   }
 
   res.status(200);
@@ -325,8 +536,16 @@ async function streamChatResponse(res, { messages, model, fallback }) {
     res.write("data: [DONE]\n\n");
   };
 
+  // Chunk terakhir (dengan include_usage) membawa info token; simpan yang
+  // terakhir terlihat.
+  let usage = null;
+
   try {
     for await (const chunk of stream) {
+      if (chunk.usage) {
+        usage = chunk.usage;
+      }
+
       const delta = chunk.choices?.[0]?.delta?.content;
 
       if (delta) {
@@ -342,6 +561,12 @@ async function streamChatResponse(res, { messages, model, fallback }) {
   } finally {
     res.end();
   }
+
+  return {
+    ok: true,
+    model: usedModel,
+    tokens: getTokenCounts({ usage }),
+  };
 }
 
 function createApp() {
@@ -423,6 +648,9 @@ function createApp() {
     chatLimiter,
     requireFirebaseAuth,
     async (req, res) => {
+      let images = []
+      console.log("[DEBUG] Handler chat berjalan");
+      console.log("[DEBUG] Endpoint /api/chat terpanggil");
       try {
         const {
           message,
@@ -466,7 +694,7 @@ function createApp() {
         }
 
         const rawImages = req.body.images;
-        let images = [];
+        images = [];
 
         if (rawImages !== undefined && rawImages !== null) {
           if (!Array.isArray(rawImages) || rawImages.length > MAX_IMAGES) {
@@ -570,10 +798,52 @@ function createApp() {
 
         // Mode streaming (SSE): jawaban dikirim bertahap.
         if (req.body?.stream === true) {
-          return streamChatResponse(res, { messages, model, fallback });
+          const streamStartedAt = Date.now();
+          return streamChatResponse(res, { messages, model, fallback }).then(
+            async (result) => {
+              const tokens = result?.tokens || {};
+              console.log(
+                "[AI Usage Metadata][stream]",
+                JSON.stringify(tokens)
+              );
+              await logUsage({
+                uid: req.user?.uid,
+                model: result?.model || model,
+                promptTokens: tokens.promptTokens,
+                completionTokens: tokens.completionTokens,
+                totalTokens: tokens.totalTokens,
+                latencyMs: Date.now() - streamStartedAt,
+                status: result?.ok === false ? "failed" : "success",
+                endpoint: "chat_stream",
+              });
+              await updateAiStatus({
+                model: result?.model || model,
+                latencyMs: Date.now() - streamStartedAt,
+                status: result?.ok === false ? "degraded" : "online",
+              });
+            },
+            async (err) => {
+              await logUsage({
+                uid: req.user?.uid,
+                model,
+                latencyMs: Date.now() - streamStartedAt,
+                status: "failed",
+                endpoint: "chat_stream",
+                errorMessage: err?.message,
+              });
+              await updateAiStatus({
+                model,
+                latencyMs: Date.now() - streamStartedAt,
+                status: "degraded",
+              });
+            }
+          );
         }
 
         let completion;
+        const startedAt = Date.now();
+
+        console.log("[DEBUG] Mulai meminta respons AI");
 
         try {
           completion = await getAiClient().chat.completions.create(
@@ -589,11 +859,44 @@ function createApp() {
           );
         }
 
+        console.log("[DEBUG] Respons AI berhasil diterima");
+
         const reply = completion.choices[0]?.message?.content ?? "";
+        console.log(
+          "[AI Usage Metadata]",
+          JSON.stringify(completion.usage ?? null)
+        );
+        const tokens = getTokenCounts(completion);
+        await logUsage({
+          uid: req.user?.uid,
+          model,
+          promptTokens: tokens.promptTokens,
+          completionTokens: tokens.completionTokens,
+          totalTokens: tokens.totalTokens,
+          latencyMs: Date.now() - startedAt,
+          status: "success",
+          endpoint: "chat",
+        });
+        await updateAiStatus({
+          model,
+          latencyMs: Date.now() - startedAt,
+          status: "online",
+        });
 
         return res.json({ reply });
       } catch (error) {
         console.error("AI API error:", error.message);
+        await logUsage({
+          uid: req.user?.uid,
+          model: images?.length ? AI_VISION_MODEL : AI_MODEL,
+          status: "failed",
+          endpoint: "chat",
+          errorMessage: error?.message,
+        });
+        await updateAiStatus({
+          model: images?.length ? AI_VISION_MODEL : AI_MODEL,
+          status: "degraded",
+        });
 
         if (res.headersSent) {
           return;
@@ -857,6 +1160,239 @@ function createApp() {
       }
     }
   );
+
+  // ===========================================================
+  // Endpoint penggunaan & batasan (halaman "Penggunaan dan batasan").
+  // Semua butuh Firebase ID token.
+  // ===========================================================
+
+  // Ringkasan jumlah permintaan & token.
+  app.get("/usage/summary", requireFirebaseAuth, async (req, res) => {
+    try {
+      const uid = req.user.uid;
+      const now = new Date();
+      const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      const start7 = new Date(startOfDay.getTime() - 6 * 24 * 60 * 60 * 1000);
+      const start30 = new Date(startOfDay.getTime() - 29 * 24 * 60 * 60 * 1000);
+
+      const docs = await readUsageDocs(uid);
+
+      let allReqs = 0;
+      let allTokens = 0;
+      let todayReqs = 0;
+      let todayTokens = 0;
+      let d7Reqs = 0;
+      let d7Tokens = 0;
+      let d30Reqs = 0;
+      let d30Tokens = 0;
+
+      for (const doc of docs) {
+        const data = doc.data();
+        if (
+          data.endpoint &&
+          !["chat", "chat_stream"].includes(data.endpoint)
+        ) {
+          continue;
+        }
+        allReqs += 1;
+        if (typeof data.totalTokens === "number") allTokens += data.totalTokens;
+
+        const created = data.createdAt;
+        let d = null;
+        if (created?.toDate) d = created.toDate();
+        else if (created instanceof Date) d = created;
+        if (!d) continue;
+
+        if (d >= startOfDay) {
+          todayReqs += 1;
+          if (typeof data.totalTokens === "number") todayTokens += data.totalTokens;
+        }
+        if (d >= start7) {
+          d7Reqs += 1;
+          if (typeof data.totalTokens === "number") d7Tokens += data.totalTokens;
+        }
+        if (d >= start30) {
+          d30Reqs += 1;
+          if (typeof data.totalTokens === "number") d30Tokens += data.totalTokens;
+        }
+      }
+
+      return res.json({
+        today: { requests: todayReqs, tokens: todayTokens },
+        last7Days: { requests: d7Reqs, tokens: d7Tokens },
+        last30Days: { requests: d30Reqs, tokens: d30Tokens },
+        allTime: { requests: allReqs, tokens: allTokens },
+      });
+    } catch (error) {
+      console.error("usage/summary error:", error.message);
+      return res.status(500).json({ error: "Gagal memuat ringkasan penggunaan." });
+    }
+  });
+
+  // Penggunaan harian (untuk grafik).
+  app.get("/usage/daily", requireFirebaseAuth, async (req, res) => {
+    try {
+      const uid = req.user.uid;
+      const days = Math.max(1, Math.min(30, Number(req.query.days) || 7));
+      const now = new Date();
+      const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      const start = new Date(startOfDay.getTime() - (days - 1) * 24 * 60 * 60 * 1000);
+
+      const docs = await readUsageDocs(uid);
+
+      const map = new Map();
+      for (let i = 0; i < days; i++) {
+        const d = new Date(start.getTime() + i * 24 * 60 * 60 * 1000);
+        const key = d.toISOString().slice(0, 10);
+        map.set(key, { date: key, requests: 0, tokens: 0 });
+      }
+
+      for (const doc of docs) {
+        const data = doc.data();
+        if (
+          data.endpoint &&
+          !["chat", "chat_stream"].includes(data.endpoint)
+        ) {
+          continue;
+        }
+        const created = data.createdAt;
+        let d = null;
+        if (created?.toDate) d = created.toDate();
+        else if (created instanceof Date) d = created;
+        if (!d || d < start) continue;
+        const key = d.toISOString().slice(0, 10);
+        const entry = map.get(key);
+        if (!entry) continue;
+        entry.requests += 1;
+        if (typeof data.totalTokens === "number") entry.tokens += data.totalTokens;
+      }
+
+      return res.json({ days: Array.from(map.values()) });
+    } catch (error) {
+      console.error("usage/daily error:", error.message);
+      return res.status(500).json({ error: "Gagal memuat penggunaan harian." });
+    }
+  });
+
+  // Batas penggunaan + sisa kuota + waktu reset. Inilah data dinamis untuk
+  // kartu "Batas penggunaan" dan "Reset batas penggunaan".
+  app.get("/usage/limits", requireFirebaseAuth, async (req, res) => {
+    try {
+      const uid = req.user.uid;
+      const now = new Date();
+      const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+      const docs = await readUsageDocs(uid);
+
+      let usedToday = 0;
+      for (const doc of docs) {
+        const data = doc.data();
+        if (
+          data.endpoint &&
+          !["chat", "chat_stream"].includes(data.endpoint)
+        ) {
+          continue;
+        }
+        const created = data.createdAt;
+        let d = null;
+        if (created?.toDate) d = created.toDate();
+        else if (created instanceof Date) d = created;
+        if (d && d >= startOfDay) usedToday += 1;
+      }
+
+      const limitPerDay = DAILY_CHAT_LIMIT;
+      const used = Math.min(usedToday, limitPerDay);
+      const remaining = Math.max(0, limitPerDay - used);
+      const remainingFraction = limitPerDay > 0 ? remaining / limitPerDay : 0;
+      const resetAt = new Date(startOfDay.getTime() + 24 * 60 * 60 * 1000);
+
+      return res.json({
+        limits: {
+          requestsPerMinute: RATE_LIMIT,
+          requestsPerDay: limitPerDay,
+          windowMs: RATE_WINDOW_MS,
+        },
+        used: { today: used },
+        remaining: {
+          today: remaining,
+          fraction: Number(remainingFraction.toFixed(4)),
+        },
+        resetAt: resetAt.toISOString(),
+        // Ibarat tanggal reset langganan bulanan: awal bulan berikutnya.
+        billingResetAt: new Date(
+          now.getFullYear(),
+          now.getMonth() + 1,
+          1
+        ).toISOString(),
+      });
+    } catch (error) {
+      console.error("usage/limits error:", error.message);
+      return res.status(500).json({ error: "Gagal memuat batas penggunaan." });
+    }
+  });
+
+  // Status koneksi layanan AI (online/degraded) + latency terakhir.
+  app.get("/ai/status", requireFirebaseAuth, async (req, res) => {
+    try {
+      const data = (await readAiStatus()) || {};
+      return res.json({
+        provider: data?.provider || "dashscope",
+        model: data?.model || AI_MODEL,
+        status: data?.status || "online",
+        latencyMs: typeof data?.latencyMs === "number" ? data.latencyMs : null,
+        updatedAt: data?.updatedAt?.toDate
+          ? data.updatedAt.toDate().toISOString()
+          : null,
+      });
+    } catch (error) {
+      console.error("ai/status error:", error.message);
+      return res.status(500).json({ error: "Gagal memuat status layanan AI." });
+    }
+  });
+
+  // Info akun terkait kredit/isi ulang otomatis (disimpan per user).
+  app.get("/account/usage-settings", requireFirebaseAuth, async (req, res) => {
+    try {
+      const uid = req.user.uid;
+      const usage = await readAccountSettings(uid);
+      return res.json({
+        automaticRecharge: usage.automaticRecharge === true,
+        plan: usage.plan || "Gratis",
+      });
+    } catch (error) {
+      console.error("account/usage-settings error:", error.message);
+      return res.status(500).json({ error: "Gagal memuat pengaturan kredit." });
+    }
+  });
+
+  // Ubah status isi ulang otomatis (disimpan di profil user).
+  app.post("/account/usage-settings", requireFirebaseAuth, async (req, res) => {
+    try {
+      const uid = req.user.uid;
+      const enabled = req.body?.automaticRecharge === true;
+
+      try {
+        const db = getDb();
+        await db.collection("users").doc(uid).set(
+          { usageSettings: { automaticRecharge: enabled } },
+          { merge: true }
+        );
+      } catch (error) {
+        // Firestore tak tersedia: tetap balas sukses agar UI tidak error,
+        // tapi beri tahu lewat flag stored.
+        console.warn(
+          "Pengaturan kredit tidak tersimpan (Firestore tak tersedia):",
+          error.message
+        );
+        return res.json({ automaticRecharge: enabled, stored: false });
+      }
+
+      return res.json({ automaticRecharge: enabled, stored: true });
+    } catch (error) {
+      console.error("account/usage-settings update error:", error.message);
+      return res.status(500).json({ error: "Gagal menyimpan pengaturan kredit." });
+    }
+  });
 
   app.use((err, req, res, next) => {
     if (res.headersSent) {
