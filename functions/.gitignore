@@ -5,3 +5,8 @@ node_modules/
 .env
 .env.*
 !.env.example
+
+# Kunci service account Firebase Admin (JANGAN di-commit)
+*firebase-adminsdk*.json
+serviceAccount*.json
+service-account*.json
